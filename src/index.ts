@@ -543,7 +543,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
   const validation = validateCreateInput(osRunner, durationMinutes, username, password, githubToken, env);
   if (validation) return validation;
 
-  const repoResolve = await resolveTargetRepoFromAllowlist(env, githubToken);
+  const repoResolve = await resolveOrCreateUserRepo(env, githubToken);
   if (!repoResolve.ok) return repoResolve.response;
   const repo = repoResolve.repo;
 
@@ -839,9 +839,15 @@ async function ghCreateRepo(token: string, name: string): Promise<{ ok: true } |
 async function ghDispatchWorkflow(repo: string, workflowFile: string, token: string, payload: Record<string, unknown>): Promise<{ ok: true } | { ok: false; response: Response }> {
   const workflowName = workflowFile.split("/").pop();
   const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowName}/dispatches`;
-  const resp = await ghApi(url, token, { method: "POST", body: JSON.stringify(payload) });
-  if (resp.status === 204) return { ok: true };
-  return { ok: false, response: await toGitHubError(resp, "Failed to dispatch workflow") };
+  let lastResp: Response | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const resp = await ghApi(url, token, { method: "POST", body: JSON.stringify(payload) });
+    if (resp.status === 204) return { ok: true };
+    lastResp = resp;
+    if (resp.status !== 404) break;
+    await delay(1500 * (attempt + 1));
+  }
+  return { ok: false, response: await toGitHubError(lastResp as Response, "Failed to dispatch workflow") };
 }
 
 async function ghFindLatestRun(repo: string, workflowFile: string, token: string, requestId: string): Promise<{ ok: true; data: { id: number } } | { ok: false }> {
@@ -874,6 +880,10 @@ function ghApi(url: string, token: string, init: RequestInit): Promise<Response>
       ...(init.headers || {})
     }
   });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function toGitHubError(resp: Response, fallbackMessage: string): Promise<Response> {
