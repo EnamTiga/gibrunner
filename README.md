@@ -66,7 +66,8 @@ Reference workflow templates are available at `templates/create-ubuntu.yml` and 
 
 ## Security notes
 
-- User GitHub token is used per request and not persisted.
+- User GitHub token is encrypted with AES-GCM using `WEBHOOK_SECRET` and stored temporarily per session in KV.
+- Token KV keys use `token:{request_id}` and expire automatically after session duration + 15 minutes.
 - Session lock key is `active:owner/repo`.
 - Password/token should never be logged in plaintext in downstream tooling.
 - RustDesk on GitHub-hosted runner is best effort due ephemeral runtime/network constraints.

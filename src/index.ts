@@ -100,6 +100,7 @@ const UI_HTML = `<!doctype html>
         <div class="full"><button id="generate_password_btn" type="button">Generate Password</button></div>
         <div class="full"><button id="create_btn">Create</button></div>
         <div class="full"><button id="terminate_btn" type="button">Terminate Session</button></div>
+        <div class="full"><button id="check_logs_btn" type="button">Check Logs</button></div>
       </div>
       <p id="notice"></p>
       <div id="status_box" class="status-box">
@@ -277,12 +278,6 @@ async function terminateCurrentSession(){
     notice.className = 'error';
     return;
   }
-  if(!token){
-    notice.textContent = 'GitHub token is required to terminate session.';
-    notice.className = 'error';
-    return;
-  }
-
   const r = await fetch('/api/v1/session/cancel', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -305,6 +300,24 @@ async function terminateCurrentSession(){
 document.getElementById('terminate_btn').addEventListener('click', terminateCurrentSession);
 document.getElementById('toast_terminate_btn').addEventListener('click', terminateCurrentSession);
 document.getElementById('toast_cancel_btn').addEventListener('click', hideActiveSessionToast);
+
+document.getElementById('check_logs_btn').addEventListener('click', async () => {
+  const token = document.getElementById('github_token').value;
+  if(!currentRequestId){
+    notice.textContent = 'No request_id selected yet.';
+    notice.className = 'error';
+    return;
+  }
+  const r = await fetch('/api/v1/session/logs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_id: currentRequestId, github_token: token })
+  });
+  const j = await r.json();
+  setOut(j);
+  notice.textContent = r.ok ? 'Workflow job logs loaded.' : (j?.error?.message || 'Failed to load logs');
+  notice.className = r.ok ? '' : 'error';
+});
 
 const restoredRequestId = localStorage.getItem(storageKey);
 if(restoredRequestId){
@@ -531,6 +544,10 @@ export default {
       return handleCancel(request, env);
     }
 
+    if (request.method === "POST" && url.pathname === "/api/v1/session/logs") {
+      return handleLogs(request, env);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v1/webhook/github") {
       return handleWebhook(request, env);
     }
@@ -564,6 +581,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
   if (!(await consumeCreateRateLimit(env, ip))) {
     const active = await env.APP_KV.get(`active:${repo}`, "json") as SessionRecord | null;
     const activeStatus = active ? (await env.APP_KV.get(`status:${active.request_id}`, "json") as SessionRecord | null) : null;
+    if (active) await storeSessionToken(env, active.request_id, githubToken, active.duration_minutes * 60 + 900);
     return jsonError(429, "RATE_LIMITED", "Too many create requests", {
       active_request_id: active?.request_id,
       active_session: activeStatus || active || null
@@ -574,6 +592,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
   const active = await env.APP_KV.get(activeKey, "json") as SessionRecord | null;
   if (active && ["queued", "running"].includes(active.status)) {
     const activeStatus = await env.APP_KV.get(`status:${active.request_id}`, "json") as SessionRecord | null;
+    await storeSessionToken(env, active.request_id, githubToken, active.duration_minutes * 60 + 900);
     return jsonError(409, "SESSION_ALREADY_ACTIVE", "An active session already exists", {
       active_request_id: active.request_id,
       active_session: activeStatus || active
@@ -625,6 +644,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
 
   await env.APP_KV.put(`status:${requestId}`, JSON.stringify(record), { expirationTtl: 6 * 3600 });
   await env.APP_KV.put(activeKey, JSON.stringify(record), { expirationTtl: durationMinutes * 60 + 900 });
+  await storeSessionToken(env, requestId, githubToken, durationMinutes * 60 + 900);
 
   return json(record, 202);
 }
@@ -725,13 +745,14 @@ async function handleConnection(url: URL, env: Env): Promise<Response> {
 async function handleCancel(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as Record<string, unknown>;
   const requestId = str(body.request_id);
-  const githubToken = str(body.github_token);
-  if (!requestId || !githubToken) return jsonError(400, "VALIDATION_ERROR", "request_id and github_token are required");
+  if (!requestId) return jsonError(400, "VALIDATION_ERROR", "request_id is required");
   const rec = await env.APP_KV.get(`status:${requestId}`, "json") as SessionRecord | null;
   if (!rec) return jsonError(404, "NOT_FOUND", "Session not found");
+  const tokenResult = await resolveSessionToken(env, requestId, str(body.github_token));
+  if (!tokenResult.ok) return tokenResult.response;
 
   if (rec.run_id) {
-    const cancel = await ghCancelRun(rec.repo, rec.run_id, githubToken);
+    const cancel = await ghCancelRun(rec.repo, rec.run_id, tokenResult.token);
     if (!cancel.ok) return cancel.response;
   }
 
@@ -741,6 +762,28 @@ async function handleCancel(request: Request, env: Env): Promise<Response> {
   await env.APP_KV.put(`status:${requestId}`, JSON.stringify(rec), { expirationTtl: 6 * 3600 });
   await env.APP_KV.delete(`active:${rec.repo}`);
   return json({ request_id: requestId, status: "cancelled" });
+}
+
+async function handleLogs(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json()) as Record<string, unknown>;
+  const requestId = str(body.request_id);
+  if (!requestId) return jsonError(400, "VALIDATION_ERROR", "request_id is required");
+
+  const rec = await env.APP_KV.get(`status:${requestId}`, "json") as SessionRecord | null;
+  if (!rec) return jsonError(404, "NOT_FOUND", "Session not found");
+  if (!rec.run_id) return jsonError(409, "RUN_ID_MISSING", "GitHub run_id is not available yet");
+  const tokenResult = await resolveSessionToken(env, requestId, str(body.github_token));
+  if (!tokenResult.ok) return tokenResult.response;
+
+  const jobs = await ghGetRunJobs(rec.repo, rec.run_id, tokenResult.token);
+  if (!jobs.ok) return jobs.response;
+  return json({
+    request_id: requestId,
+    repo: rec.repo,
+    run_id: rec.run_id,
+    workflow_url: rec.workflow_url,
+    jobs: jobs.data
+  });
 }
 
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
@@ -882,6 +925,88 @@ async function ghCancelRun(repo: string, runId: number, token: string): Promise<
   return { ok: false, response: await toGitHubError(resp, "Failed to cancel workflow run") };
 }
 
+async function ghGetRunJobs(repo: string, runId: number, token: string): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
+  const url = `https://api.github.com/repos/${repo}/actions/runs/${runId}/jobs?per_page=100`;
+  const resp = await ghApi(url, token, { method: "GET" });
+  if (resp.status >= 200 && resp.status < 300) {
+    const data = (await resp.json()) as {
+      jobs?: Array<{
+        name: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+        started_at: string | null;
+        completed_at: string | null;
+        steps?: Array<{
+          number: number;
+          name: string;
+          status: string;
+          conclusion: string | null;
+          started_at: string | null;
+          completed_at: string | null;
+        }>;
+      }>;
+    };
+    return {
+      ok: true,
+      data: (data.jobs || []).map((job) => ({
+        name: job.name,
+        status: job.status,
+        conclusion: job.conclusion,
+        html_url: job.html_url,
+        started_at: job.started_at,
+        completed_at: job.completed_at,
+        failed_steps: (job.steps || []).filter((step) => step.conclusion === "failure"),
+        steps: job.steps || []
+      }))
+    };
+  }
+  return { ok: false, response: await toGitHubError(resp, "Failed to fetch workflow jobs") };
+}
+
+async function storeSessionToken(env: Env, requestId: string, token: string, ttlSeconds: number): Promise<void> {
+  const encrypted = await encryptSecret(env, token);
+  await env.APP_KV.put(`token:${requestId}`, encrypted, { expirationTtl: Math.max(900, ttlSeconds) });
+}
+
+async function resolveSessionToken(env: Env, requestId: string, providedToken: string): Promise<{ ok: true; token: string } | { ok: false; response: Response }> {
+  if (providedToken) return { ok: true, token: providedToken };
+
+  const encrypted = await env.APP_KV.get(`token:${requestId}`);
+  if (!encrypted) {
+    return {
+      ok: false,
+      response: jsonError(401, "TOKEN_NOT_STORED", "Stored GitHub token is not available for this session. Re-enter token and try again.")
+    };
+  }
+
+  try {
+    return { ok: true, token: await decryptSecret(env, encrypted) };
+  } catch {
+    return { ok: false, response: jsonError(500, "TOKEN_DECRYPT_FAILED", "Stored GitHub token could not be decrypted") };
+  }
+}
+
+async function getSecretKey(env: Env): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.WEBHOOK_SECRET));
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encryptSecret(env: Env, plaintext: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await getSecretKey(env);
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));
+  return `${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(cipher))}`;
+}
+
+async function decryptSecret(env: Env, encrypted: string): Promise<string> {
+  const [ivPart, cipherPart] = encrypted.split(".");
+  if (!ivPart || !cipherPart) throw new Error("Invalid encrypted secret format");
+  const key = await getSecretKey(env);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToArrayBuffer(ivPart) }, key, base64ToArrayBuffer(cipherPart));
+  return new TextDecoder().decode(plaintext);
+}
+
 function ghApi(url: string, token: string, init: RequestInit): Promise<Response> {
   return fetch(url, {
     ...init,
@@ -923,9 +1048,21 @@ function isStrongPassword(v: string): boolean {
 
 function toBase64(input: string): string {
   const bytes = new TextEncoder().encode(input);
+  return bytesToBase64(bytes);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
+}
+
+function base64ToArrayBuffer(input: string): ArrayBuffer {
+  const binary = atob(input);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return buffer;
 }
 
 function json(data: unknown, status = 200): Response {
