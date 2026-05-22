@@ -5,7 +5,6 @@ interface Env {
   RATE_LIMIT_CREATE?: string;
   RATE_LIMIT_WINDOW_SECONDS?: string;
   STATUS_STALE_SECONDS?: string;
-  TEMPLATE_REPO?: string;
 }
 
 type SessionStatus = "queued" | "running" | "success" | "failed" | "expired" | "cancelled";
@@ -317,17 +316,16 @@ if(restoredRequestId){
 </body>
 </html>`;
 
-const WORKFLOW_FILE = `.github/workflows/create-vps.yml`;
+const UBUNTU_WORKFLOW_FILE = `.github/workflows/create-ubuntu.yml`;
+const WINDOWS_WORKFLOW_FILE = `.github/workflows/create-windows.yml`;
 
-const WORKFLOW_CONTENT = `name: create-vps
-run-name: create-vps-\${{ inputs.request_id }}
+function createWorkflowContent(workflowName: string, runsOn: string): string {
+  return `name: ${workflowName}
+run-name: ${workflowName}-\${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
     inputs:
-      os_runner:
-        required: true
-        type: string
       request_id:
         required: true
         type: string
@@ -349,7 +347,7 @@ on:
 
 jobs:
   run:
-    runs-on: \${{ github.event.inputs.os_runner || 'ubuntu-latest' }}
+    runs-on: ${runsOn}
     timeout-minutes: 250
     steps:
       - name: Notify cloning
@@ -484,6 +482,10 @@ jobs:
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
             -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"WORKFLOW_FAILED","message":"Workflow failed before RustDesk became ready","troubleshooting":["Open the workflow logs from the GitHub Actions run URL","Check RustDesk install/start step","Terminate the session and retry"]}}'
 `;
+}
+
+const UBUNTU_WORKFLOW_CONTENT = createWorkflowContent("create-ubuntu", "ubuntu-latest");
+const WINDOWS_WORKFLOW_CONTENT = createWorkflowContent("create-windows", "windows-latest");
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -578,19 +580,19 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
       duration_minutes: String(durationMinutes),
       username,
       password,
-      os_runner: osRunner,
       callback_url: `${new URL(request.url).origin}/api/v1/webhook/github`,
       callback_secret: env.WEBHOOK_SECRET
     }
   };
 
-  const workflowReady = await ensureWorkflowFile(repo, repoMeta.data.default_branch, githubToken);
+  const workflowReady = await ensureWorkflowFiles(repo, repoMeta.data.default_branch, githubToken);
   if (!workflowReady.ok) return workflowReady.response;
 
-  const dispatch = await ghDispatchWorkflow(repo, githubToken, runPayload);
+  const workflowFile = osRunner === "windows-latest" ? WINDOWS_WORKFLOW_FILE : UBUNTU_WORKFLOW_FILE;
+  const dispatch = await ghDispatchWorkflow(repo, workflowFile, githubToken, runPayload);
   if (!dispatch.ok) return dispatch.response;
 
-  const runInfo = await ghFindLatestRun(repo, githubToken, requestId);
+  const runInfo = await ghFindLatestRun(repo, workflowFile, githubToken, requestId);
   const runId = runInfo.ok ? runInfo.data.id : undefined;
   const workflowUrl = runId ? `https://github.com/${repo}/actions/runs/${runId}` : undefined;
 
@@ -648,7 +650,7 @@ async function resolveTargetRepoFromAllowlist(env: Env, githubToken: string): Pr
   return resolveOrCreateUserRepo(env, githubToken);
 }
 
-async function resolveOrCreateUserRepo(env: Env, githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
+async function resolveOrCreateUserRepo(_env: Env, githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
   const viewer = await ghGetViewer(githubToken);
   if (!viewer.ok) return { ok: false, response: viewer.response };
   const repo = `${viewer.login}/gibrunner`;
@@ -656,8 +658,7 @@ async function resolveOrCreateUserRepo(env: Env, githubToken: string): Promise<{
   const existing = await ghGetRepo(repo, githubToken);
   if (existing.ok) return { ok: true, repo };
 
-  const templateRepo = env.TEMPLATE_REPO || "EnamTiga/gibrunner";
-  const created = await ghGenerateRepoFromTemplate(githubToken, templateRepo, viewer.login, "gibrunner");
+  const created = await ghCreateRepo(githubToken, "gibrunner");
   if (!created.ok) return { ok: false, response: created.response };
   return { ok: true, repo };
 }
@@ -774,11 +775,17 @@ async function consumeCreateRateLimit(env: Env, ip: string): Promise<boolean> {
   return true;
 }
 
-async function ensureWorkflowFile(repo: string, branch: string, token: string): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const checkUrl = `https://api.github.com/repos/${repo}/contents/${WORKFLOW_FILE}?ref=${encodeURIComponent(branch)}`;
+async function ensureWorkflowFiles(repo: string, branch: string, token: string): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const ubuntu = await ensureWorkflowFile(repo, branch, token, UBUNTU_WORKFLOW_FILE, UBUNTU_WORKFLOW_CONTENT);
+  if (!ubuntu.ok) return ubuntu;
+  return ensureWorkflowFile(repo, branch, token, WINDOWS_WORKFLOW_FILE, WINDOWS_WORKFLOW_CONTENT);
+}
+
+async function ensureWorkflowFile(repo: string, branch: string, token: string, workflowFile: string, workflowContent: string): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const checkUrl = `https://api.github.com/repos/${repo}/contents/${workflowFile}?ref=${encodeURIComponent(branch)}`;
   const check = await ghApi(checkUrl, token, { method: "GET" });
-  const putUrl = `https://api.github.com/repos/${repo}/contents/${WORKFLOW_FILE}`;
-  const content = toBase64(WORKFLOW_CONTENT);
+  const putUrl = `https://api.github.com/repos/${repo}/contents/${workflowFile}`;
+  const content = toBase64(workflowContent);
 
   if (check.status === 200) {
     const existing = (await check.json()) as { sha: string; content?: string };
@@ -796,7 +803,7 @@ async function ensureWorkflowFile(repo: string, branch: string, token: string): 
 
   const put = await ghApi(putUrl, token, {
     method: "PUT",
-    body: JSON.stringify({ message: "Add create-vps workflow", content, branch })
+    body: JSON.stringify({ message: `Add ${workflowFile}`, content, branch })
   });
   if (put.status >= 200 && put.status < 300) return { ok: true };
   return { ok: false, response: await toGitHubError(put, "Failed to install workflow file") };
@@ -820,24 +827,26 @@ async function ghGetViewer(token: string): Promise<{ ok: true; login: string } |
   return { ok: false, response: await toGitHubError(resp, "Failed to read token user profile") };
 }
 
-async function ghGenerateRepoFromTemplate(token: string, templateRepo: string, owner: string, name: string): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const resp = await ghApi(`https://api.github.com/repos/${templateRepo}/generate`, token, {
+async function ghCreateRepo(token: string, name: string): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const resp = await ghApi("https://api.github.com/user/repos", token, {
     method: "POST",
-    body: JSON.stringify({ owner, name, private: true, include_all_branches: false, description: "GibRunner target repository" })
+    body: JSON.stringify({ name, private: true, auto_init: true, description: "GibRunner workflow repository" })
   });
   if (resp.status >= 200 && resp.status < 300) return { ok: true };
-  return { ok: false, response: await toGitHubError(resp, `Failed to generate user repository from template ${templateRepo}`) };
+  return { ok: false, response: await toGitHubError(resp, "Failed to create user repository gibrunner") };
 }
 
-async function ghDispatchWorkflow(repo: string, token: string, payload: Record<string, unknown>): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const url = `https://api.github.com/repos/${repo}/actions/workflows/create-vps.yml/dispatches`;
+async function ghDispatchWorkflow(repo: string, workflowFile: string, token: string, payload: Record<string, unknown>): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const workflowName = workflowFile.split("/").pop();
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowName}/dispatches`;
   const resp = await ghApi(url, token, { method: "POST", body: JSON.stringify(payload) });
   if (resp.status === 204) return { ok: true };
   return { ok: false, response: await toGitHubError(resp, "Failed to dispatch workflow") };
 }
 
-async function ghFindLatestRun(repo: string, token: string, requestId: string): Promise<{ ok: true; data: { id: number } } | { ok: false }> {
-  const url = `https://api.github.com/repos/${repo}/actions/workflows/create-vps.yml/runs?per_page=5`;
+async function ghFindLatestRun(repo: string, workflowFile: string, token: string, requestId: string): Promise<{ ok: true; data: { id: number } } | { ok: false }> {
+  const workflowName = workflowFile.split("/").pop();
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowName}/runs?per_page=5`;
   const resp = await ghApi(url, token, { method: "GET" });
   if (resp.status < 200 || resp.status >= 300) return { ok: false };
   const data = (await resp.json()) as { workflow_runs?: Array<{ id: number; display_title?: string; name?: string }> };
