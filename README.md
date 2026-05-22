@@ -1,6 +1,6 @@
 # GibRunner
 
-Cloudflare Worker control plane to trigger GitHub Actions sessions on allowlisted repositories, with RustDesk connection details and auto-expire flow.
+Cloudflare Worker control plane to trigger GitHub Actions sessions on allowlisted repositories, with SSH/Web Terminal access and auto-expire flow.
 
 ## Features
 
@@ -8,8 +8,8 @@ Cloudflare Worker control plane to trigger GitHub Actions sessions on allowliste
 - Allowlist validation using Cloudflare KV
 - One active session per repository
 - Duration hard limit up to 4 hours
-- Runner OS selection: Ubuntu/Windows
-- RustDesk connection details exposure to UI
+- Linux-only GitHub-hosted runner sessions
+- SSH and Web Terminal connection details exposed to UI via tmate
 - Structured status and troubleshooting states
 
 ## Setup
@@ -60,14 +60,13 @@ User UI only requires GitHub token input. Repository resolution order:
 When session creation is requested, the Worker ensures these workflow files exist in the target repo. If missing or outdated, it creates/updates them automatically:
 
 - `.github/workflows/create-ubuntu.yml`
-- `.github/workflows/create-windows.yml`
 
-Reference workflow templates are available at `templates/create-ubuntu.yml` and `templates/create-windows.yml`.
+Reference workflow template is available at `templates/create-ubuntu.yml`.
 
 ## Security notes
 
 - User GitHub token is encrypted with AES-GCM using `WEBHOOK_SECRET` and stored temporarily per session in KV.
 - Token KV keys use `token:{request_id}` and expire automatically after session duration + 15 minutes.
 - Session lock key is `active:owner/repo`.
-- Password/token should never be logged in plaintext in downstream tooling.
-- RustDesk on GitHub-hosted runner is best effort due ephemeral runtime/network constraints.
+- Token should never be logged in plaintext in downstream tooling.
+- SSH/Web Terminal access is provided through tmate and expires with the GitHub Actions session.

@@ -1,5 +1,5 @@
 name: create-ubuntu
-run-name: create-ubuntu-${{ inputs.request_id }}
+run-name: create-ubuntu-${{ github.event.inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -9,19 +9,10 @@ on:
         type: string
       duration_minutes:
         required: true
-        type: string
-      username:
-        required: true
-        type: string
-      password:
-        required: true
-        type: string
       callback_url:
         required: true
-        type: string
       callback_secret:
         required: true
-        type: string
 
 jobs:
   run:
@@ -36,13 +27,27 @@ jobs:
             -H "content-type: application/json" \
             -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
             -d '{"request_id":"${{ github.event.inputs.request_id }}","status":"running","phase":"provisioning"}'
-      - name: Notify RustDesk starting
+      - name: Notify SSH starting
         shell: bash
         run: |
           curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
             -H "content-type: application/json" \
             -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
-            -d '{"request_id":"${{ github.event.inputs.request_id }}","status":"running","phase":"rustdesk_starting"}'
+            -d '{"request_id":"${{ github.event.inputs.request_id }}","status":"running","phase":"ssh_starting"}'
+      - name: Setup SSH tunnel
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq tmate
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          payload=$(jq -cn --arg req "${{ github.event.inputs.request_id }}" --arg ssh "$TMATE_SSH" --arg web "$TMATE_WEB" '{request_id:$req,status:"running",phase:"ready",connection:{tmate_ssh:$ssh,tmate_web:$web}}')
+          curl -fsS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "content-type: application/json" \
+            -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
+            -d "$payload"
       - name: Hold session
         shell: bash
         run: sleep "$((${{ github.event.inputs.duration_minutes }}*60))"

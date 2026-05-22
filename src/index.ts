@@ -15,7 +15,7 @@ type SessionPhase =
   | "dispatching"
   | "cloning"
   | "provisioning"
-  | "rustdesk_starting"
+  | "ssh_starting"
   | "ready"
   | "expiring"
   | "failed"
@@ -26,7 +26,7 @@ type SessionPhase =
 interface SessionRecord {
   request_id: string;
   repo: string;
-  os_runner: "ubuntu-latest" | "windows-latest";
+  os_runner: "ubuntu-latest";
   duration_minutes: number;
   status: SessionStatus;
   phase: SessionPhase;
@@ -39,8 +39,6 @@ interface SessionRecord {
 }
 
 interface ConnectionRecord {
-  rustdesk_id?: string;
-  rustdesk_password?: string;
   tmate_ssh?: string;
   tmate_web?: string;
 }
@@ -54,309 +52,303 @@ const UI_HTML = `<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>GibRunner</title>
   <style>
-    :root { --bg:#f4f7fb; --card:#ffffff; --text:#121722; --muted:#5e6878; --accent:#0068d6; --danger:#b00020; }
+    :root { --bg:#f5f7fb; --surface:#ffffff; --surface2:#f8fafc; --line:#d9e1ec; --text:#111827; --muted:#5b6575; --soft:#eef4ff; --primary:#1d4ed8; --primary2:#1e40af; --success:#047857; --warning:#b45309; --danger:#b42318; --shadow:0 20px 60px rgba(15,23,42,.08); }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: "Segoe UI", "Noto Sans", sans-serif; color:var(--text); background: radial-gradient(circle at 20% 20%, #e9f2ff, #f4f7fb 50%); }
-    .wrap { max-width: 860px; margin: 2rem auto; padding: 1rem; }
-    .card { background:var(--card); border-radius:16px; box-shadow:0 8px 30px rgba(20,38,66,.08); padding:1.2rem; }
-    h1 { margin:0 0 1rem; font-size:1.5rem; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:.8rem; }
-    label { font-size:.85rem; color:var(--muted); display:block; margin-bottom:.2rem; }
-    input,select,button { width:100%; border:1px solid #ccd5e2; border-radius:10px; padding:.66rem .74rem; font-size:.95rem; }
-    button { background:var(--accent); color:#fff; border:none; font-weight:600; cursor:pointer; }
-    button:disabled { opacity:.6; cursor:not-allowed; }
-    pre { background:#f7f9fc; border:1px solid #dde5f2; border-radius:10px; padding:.75rem; overflow:auto; min-height:140px; }
-    .conn { margin-top: .8rem; padding: .8rem; background:#f8fbff; border:1px solid #d9e7ff; border-radius:10px; display:none; }
-    .conn-grid { display:grid; grid-template-columns:1fr auto; gap:.45rem; }
-    .conn-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#fff; border:1px solid #cfd9e8; border-radius:8px; padding:.5rem .6rem; overflow:auto; }
-    .copy-btn { width:auto; padding:.5rem .7rem; font-size:.85rem; }
-    .toast { position: fixed; right: 1rem; bottom: 1rem; width: min(420px, calc(100vw - 2rem)); background:#101827; color:#fff; border-radius:14px; box-shadow:0 14px 40px rgba(0,0,0,.22); padding:1rem; display:none; z-index:10; }
-    .toast-title { font-weight:700; margin-bottom:.25rem; }
-    .toast-body { color:#d7deea; font-size:.92rem; line-height:1.45; margin-bottom:.8rem; }
-    .toast-actions { display:flex; gap:.5rem; }
-    .toast-actions button { width:auto; padding:.55rem .75rem; }
-    .toast-secondary { background:#344056; }
-    .toast-danger { background:#b42318; }
-    .status-box { margin-top:.8rem; padding:.85rem; border:1px solid #d7e2f0; border-radius:12px; background:#fbfdff; display:none; }
-    .status-row { display:flex; justify-content:space-between; gap:.8rem; padding:.28rem 0; border-bottom:1px solid #edf2f8; }
-    .status-row:last-child { border-bottom:none; }
-    .status-label { color:var(--muted); }
-    .status-value { font-weight:650; text-align:right; }
-    .full { grid-column: 1 / -1; }
-    .error { color:var(--danger); font-weight:600; }
-    @media (max-width: 720px){ .grid{grid-template-columns:1fr;} }
+    body { margin:0; font-family: Inter, "Segoe UI", Arial, sans-serif; background:linear-gradient(180deg,#f8fbff 0%,var(--bg) 48%,#eef3f8 100%); color:var(--text); }
+    .page { max-width:1120px; margin:0 auto; padding:36px 20px 56px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:28px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .logo { width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,#1d4ed8,#0f766e); color:white; display:grid; place-items:center; font-weight:800; }
+    .brand-title { font-size:18px; font-weight:750; letter-spacing:-.02em; }
+    .brand-subtitle { color:var(--muted); font-size:13px; margin-top:2px; }
+    .badge { border:1px solid var(--line); background:white; color:#334155; border-radius:999px; padding:8px 12px; font-size:13px; font-weight:650; }
+    .hero { display:grid; grid-template-columns:minmax(0,1.02fr) minmax(360px,.98fr); gap:24px; align-items:start; }
+    .panel { background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:24px; box-shadow:var(--shadow); overflow:hidden; }
+    .panel-body { padding:26px; }
+    .eyebrow { color:var(--primary); font-weight:750; font-size:13px; letter-spacing:.04em; text-transform:uppercase; }
+    h1 { margin:10px 0 12px; font-size:36px; line-height:1.08; letter-spacing:-.04em; }
+    .lead { color:var(--muted); font-size:16px; line-height:1.65; margin:0 0 24px; }
+    .checklist { display:grid; gap:12px; margin-top:22px; }
+    .check { display:flex; gap:12px; align-items:flex-start; color:#334155; font-size:14px; line-height:1.45; }
+    .check span { width:22px; height:22px; flex:0 0 auto; border-radius:50%; display:grid; place-items:center; background:#e0ecff; color:var(--primary); font-size:13px; font-weight:800; }
+    .form-grid { display:grid; gap:16px; }
+    label { display:block; font-size:13px; font-weight:700; color:#334155; margin-bottom:7px; }
+    input,select { width:100%; border:1px solid #cfd8e6; background:#fff; border-radius:12px; padding:12px 13px; font-size:15px; color:var(--text); outline:none; transition:border-color .15s, box-shadow .15s; }
+    input:focus,select:focus { border-color:#93b4ff; box-shadow:0 0 0 4px rgba(29,78,216,.10); }
+    .input-wrap { position:relative; }
+    .input-wrap input { padding-right:92px; }
+    .toggle-visibility { position:absolute; right:7px; top:7px; border-radius:9px; padding:7px 10px; background:#eef2f7; color:#334155; font-size:12px; font-weight:800; }
+    .field-note { margin-top:6px; color:var(--muted); font-size:12px; line-height:1.45; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .button-row { display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; }
+    button { border:0; border-radius:12px; padding:12px 16px; font-size:14px; font-weight:750; cursor:pointer; transition:transform .12s, background .12s, opacity .12s; }
+    button:active { transform:translateY(1px); }
+    button:disabled { opacity:.55; cursor:not-allowed; transform:none; }
+    .btn-primary { background:var(--primary); color:white; min-width:170px; }
+    .btn-primary:hover { background:var(--primary2); }
+    .btn-secondary { background:#eef2f7; color:#1f2937; }
+    .btn-danger { background:#fee4e2; color:var(--danger); }
+    .status-panel { margin-top:22px; display:none; }
+    .status-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding-bottom:18px; border-bottom:1px solid var(--line); }
+    .status-kicker { color:var(--muted); font-size:13px; font-weight:700; margin-bottom:6px; }
+    .status-title { font-size:22px; font-weight:800; letter-spacing:-.02em; }
+    .status-meta { color:var(--muted); font-size:13px; margin-top:5px; }
+    .live { display:flex; align-items:center; gap:8px; color:var(--success); font-size:13px; font-weight:750; white-space:nowrap; }
+    .dot { width:9px; height:9px; background:var(--success); border-radius:50%; box-shadow:0 0 0 6px rgba(4,120,87,.12); }
+    .timeline { display:grid; gap:12px; margin-top:20px; }
+    .step { display:flex; align-items:flex-start; gap:13px; padding:12px; border:1px solid var(--line); border-radius:14px; background:white; }
+    .step-marker { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; background:#eef2f7; color:#64748b; font-size:13px; font-weight:800; flex:0 0 auto; }
+    .step.active { border-color:#b8ccff; background:#f7faff; }
+    .step.active .step-marker { background:var(--primary); color:white; }
+    .step.done .step-marker { background:#dcfce7; color:var(--success); }
+    .step-title { font-weight:760; }
+    .step-desc { color:var(--muted); font-size:13px; margin-top:3px; line-height:1.45; }
+    .notice { margin-top:14px; border-radius:14px; padding:13px 14px; font-size:14px; line-height:1.5; display:none; }
+    .notice.info { display:block; background:#eff6ff; color:#1e3a8a; border:1px solid #bfdbfe; }
+    .notice.warn { display:block; background:#fffbeb; color:#92400e; border:1px solid #fde68a; }
+    .notice.error { display:block; background:#fef3f2; color:#991b1b; border:1px solid #fecaca; }
+    .connection { display:none; margin-top:22px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:18px; padding:18px; }
+    .connection h2 { margin:0 0 5px; font-size:19px; }
+    .connection p { margin:0 0 16px; color:#166534; font-size:14px; }
+    .conn-grid { display:grid; gap:12px; }
+    .conn-item { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; background:white; border:1px solid #bbf7d0; border-radius:14px; padding:12px; }
+    .conn-label { color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; margin-bottom:5px; }
+    .conn-value { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:15px; overflow:auto; }
+    .advanced { margin-top:16px; border-top:1px solid var(--line); padding-top:14px; }
+    details summary { cursor:pointer; color:#475569; font-size:13px; font-weight:750; }
+    .details-grid { display:grid; gap:8px; margin-top:12px; color:#475569; font-size:13px; }
+    .details-grid div { display:flex; justify-content:space-between; gap:14px; }
+    .toast { position:fixed; right:18px; bottom:18px; width:min(440px,calc(100vw - 36px)); background:#111827; color:white; border-radius:18px; box-shadow:0 22px 70px rgba(0,0,0,.22); padding:18px; display:none; z-index:20; }
+    .toast-title { font-weight:800; margin-bottom:5px; }
+    .toast-body { color:#d1d5db; font-size:14px; line-height:1.5; margin-bottom:14px; }
+    .toast-actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .toast button { background:#374151; color:white; }
+    .toast .btn-danger { background:#b42318; }
+    .inline-link { border:0; padding:0; border-radius:0; background:transparent; color:var(--primary); font-size:12px; font-weight:800; text-decoration:underline; }
+    .modal { position:fixed; inset:0; background:rgba(15,23,42,.56); display:none; align-items:center; justify-content:center; padding:18px; z-index:30; }
+    .modal.open { display:flex; }
+    .modal-card { width:min(560px,100%); background:white; border-radius:22px; box-shadow:0 30px 90px rgba(0,0,0,.28); padding:24px; border:1px solid var(--line); }
+    .modal-head { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:10px; }
+    .modal-head h2 { margin:0; font-size:22px; letter-spacing:-.02em; }
+    .modal-close { background:#eef2f7; color:#334155; padding:9px 12px; }
+    .modal-lead { color:var(--muted); line-height:1.55; margin:0 0 16px; }
+    .guide-list { margin:0 0 18px; padding-left:22px; color:#334155; line-height:1.65; }
+    .guide-link { display:inline-flex; align-items:center; justify-content:center; border-radius:12px; padding:12px 16px; background:var(--primary); color:white; font-weight:800; text-decoration:none; }
+    @media (max-width:900px) { .hero { grid-template-columns:1fr; } h1 { font-size:30px; } }
+    @media (max-width:620px) { .page { padding:20px 12px 36px; } .topbar,.status-head { flex-direction:column; align-items:flex-start; } .row,.conn-item { grid-template-columns:1fr; } .panel-body { padding:18px; } .button-row { gap:10px; } .button-row button { width:100%; } .input-wrap input { padding-right:86px; } h1 { font-size:28px; } .lead { font-size:15px; } }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>Create Runner Session</h1>
-      <div class="grid">
-        <div class="full"><label>GitHub Token (PAT / Classic)</label><input id="github_token" type="password" /></div>
-        <div><label>OS Runner</label><select id="os_runner"><option value="ubuntu-latest">ubuntu-latest</option><option value="windows-latest">windows-latest</option></select></div>
-        <div><label>Duration (minutes, max 240)</label><input id="duration_minutes" type="number" value="120" min="15" max="240" /></div>
-        <div><label>Username</label><input id="username" value="runneruser" /></div>
-        <div class="full"><label>Password</label><input id="password" type="password" /></div>
-        <div class="full"><button id="generate_password_btn" type="button">Generate Password</button></div>
-        <div class="full"><button id="create_btn">Create</button></div>
-        <div class="full"><button id="terminate_btn" type="button">Terminate Session</button></div>
-        <div class="full"><button id="check_logs_btn" type="button">Check Logs</button></div>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">GR</div>
+        <div><div class="brand-title">GibRunner</div><div class="brand-subtitle">Secure Linux session launcher</div></div>
       </div>
-      <p id="notice"></p>
-      <div id="status_box" class="status-box">
-        <div class="status-row"><span class="status-label">Status</span><span id="status_text" class="status-value">-</span></div>
-        <div class="status-row"><span class="status-label">Phase</span><span id="phase_text" class="status-value">-</span></div>
-        <div class="status-row"><span class="status-label">Repo</span><span id="repo_text" class="status-value">-</span></div>
-        <div class="status-row"><span class="status-label">Expires</span><span id="expires_text" class="status-value">-</span></div>
-        <div class="status-row"><span class="status-label">Last checked</span><span id="last_checked_text" class="status-value">-</span></div>
-      </div>
-      <div id="connection_box" class="conn">
-        <strong>Connection Info</strong>
-        <div class="conn-grid" style="margin-top:.5rem;">
-          <div id="conn_rustdesk_id" class="conn-code">-</div><button class="copy-btn" data-copy="conn_rustdesk_id" data-label="Copy ID">Copy ID</button>
-          <div id="conn_rustdesk_password" class="conn-code">-</div><button class="copy-btn" data-copy="conn_rustdesk_password" data-label="Copy Password">Copy Password</button>
-          <div id="conn_tmate_ssh" class="conn-code">-</div><button class="copy-btn" data-copy="conn_tmate_ssh" data-label="Copy SSH">Copy SSH</button>
-          <div id="conn_tmate_web" class="conn-code">-</div><button class="copy-btn" data-copy="conn_tmate_web" data-label="Copy Link">Copy Link</button>
+      <div class="badge">Linux only</div>
+    </header>
+
+    <section class="hero">
+      <div class="panel">
+        <div class="panel-body">
+          <div class="eyebrow">Remote session</div>
+          <h1>Start a ready-to-use Linux session in minutes.</h1>
+          <p class="lead">Enter your GitHub token, choose a duration, and GibRunner will prepare SSH access automatically. Typical setup time is 1-3 minutes.</p>
+          <div class="checklist">
+            <div class="check"><span>1</span><div><strong>Provide access.</strong><br />Use a GitHub token with repository and workflow access.</div></div>
+            <div class="check"><span>2</span><div><strong>Wait comfortably.</strong><br />Progress is tracked step by step while the environment is prepared.</div></div>
+            <div class="check"><span>3</span><div><strong>Connect.</strong><br />Open the web terminal or copy the SSH command when the session is ready.</div></div>
+          </div>
         </div>
       </div>
-      <pre id="output"></pre>
+
+      <div class="panel">
+        <div class="panel-body">
+          <div class="eyebrow">Setup</div>
+          <div class="form-grid">
+            <div>
+              <label for="github_token">GitHub token</label>
+              <div class="input-wrap">
+                <input id="github_token" type="password" autocomplete="off" placeholder="Paste your token" />
+                <button class="toggle-visibility" type="button" data-toggle-input="github_token">Show</button>
+              </div>
+              <div class="field-note">Your token is only used to create and monitor this session. <button id="token_guide_btn" class="inline-link" type="button">How do I create one?</button></div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="duration_minutes">Session duration</label>
+                <select id="duration_minutes">
+                  <option value="15">15 minutes</option>
+                  <option value="30">30 minutes</option>
+                  <option value="60">1 hour</option>
+                  <option value="120" selected>2 hours</option>
+                  <option value="240">4 hours</option>
+                </select>
+              </div>
+              <div>
+                <label>Access method</label>
+                <input value="SSH + Web Terminal" disabled />
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="create_btn" class="btn-primary" type="button">Start session</button>
+              <button id="terminate_btn" class="btn-danger" type="button" disabled>Terminate</button>
+            </div>
+            <div id="notice" class="notice"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="status_panel" class="panel status-panel">
+      <div class="panel-body">
+        <div class="status-head">
+          <div>
+            <div class="status-kicker">Current session</div>
+            <div id="status_title" class="status-title">Preparing your session</div>
+            <div id="status_meta" class="status-meta">Waiting for the first update...</div>
+          </div>
+          <div class="live"><span class="dot"></span><span id="live_text">Live updates</span></div>
+        </div>
+        <div class="timeline">
+          <div id="step_validate" class="step"><div class="step-marker">1</div><div><div class="step-title">Validating access</div><div class="step-desc">Checking token access and preparing the target repository.</div></div></div>
+          <div id="step_prepare" class="step"><div class="step-marker">2</div><div><div class="step-title">Preparing environment</div><div class="step-desc">Starting the Linux runner and installing required services.</div></div></div>
+          <div id="step_connect" class="step"><div class="step-marker">3</div><div><div class="step-title">Starting SSH access</div><div class="step-desc">Launching the secure terminal tunnel and collecting connection details.</div></div></div>
+          <div id="step_ready" class="step"><div class="step-marker">4</div><div><div class="step-title">Session ready</div><div class="step-desc">Open the web terminal or copy the SSH command to begin.</div></div></div>
+        </div>
+        <div id="wait_notice" class="notice info">Setup can take a few minutes. You can leave this page open; progress will resume automatically after refresh.</div>
+        <div class="advanced">
+          <details>
+            <summary>Advanced session details</summary>
+            <div class="details-grid">
+              <div><span>Repository</span><strong id="detail_repo">-</strong></div>
+              <div><span>Expires</span><strong id="detail_expires">-</strong></div>
+              <div><span>Last update</span><strong id="detail_updated">-</strong></div>
+              <div><span>Workflow</span><strong id="detail_workflow">-</strong></div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section id="connection_box" class="connection">
+      <h2>Your session is ready</h2>
+      <p>Use SSH or the web terminal to access the prepared Linux session.</p>
+      <div class="conn-grid">
+        <div class="conn-item"><div><div class="conn-label">SSH access</div><div id="conn_tmate_ssh" class="conn-value">-</div></div><button class="btn-secondary copy-btn" data-copy="conn_tmate_ssh">Copy SSH</button></div>
+        <div class="conn-item"><div><div class="conn-label">Web terminal</div><div id="conn_tmate_web" class="conn-value">-</div></div><button class="btn-secondary copy-btn" data-copy="conn_tmate_web">Copy link</button></div>
+      </div>
+    </section>
+
+    <div id="token_guide_modal" class="modal" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="token_guide_title">
+        <div class="modal-head"><h2 id="token_guide_title">Create a GitHub token</h2><button id="token_guide_close" class="modal-close" type="button">Close</button></div>
+        <p class="modal-lead">Create a classic GitHub token with the permissions needed to install and run the workflow.</p>
+        <ol class="guide-list">
+          <li>Open the GitHub token creation page.</li>
+          <li>Set an expiration that matches your usage.</li>
+          <li>Select the scopes <strong>repo</strong> and <strong>workflow</strong>.</li>
+          <li>Generate the token and paste it into GibRunner.</li>
+        </ol>
+        <a class="guide-link" href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=GibRunner%20session%20token" target="_blank" rel="noopener">Open GitHub token page</a>
+      </div>
     </div>
-  </div>
+  </main>
+
   <div id="active_session_toast" class="toast">
-    <div class="toast-title">Active session still running</div>
+    <div class="toast-title">Existing session found</div>
     <div id="active_session_toast_body" class="toast-body"></div>
-    <div class="toast-actions">
-      <button id="toast_cancel_btn" type="button" class="toast-secondary">Cancel</button>
-      <button id="toast_terminate_btn" type="button" class="toast-danger">Terminate Session</button>
-    </div>
+    <div class="toast-actions"><button id="toast_watch_btn" type="button">Watch progress</button><button id="toast_terminate_btn" class="btn-danger" type="button">Terminate</button></div>
   </div>
+
 <script>
-const out = document.getElementById('output');
-const notice = document.getElementById('notice');
-const connectionBox = document.getElementById('connection_box');
-const activeSessionToast = document.getElementById('active_session_toast');
-const activeSessionToastBody = document.getElementById('active_session_toast_body');
-const statusBox = document.getElementById('status_box');
 const storageKey = 'gibrunner.currentRequestId';
+const startedKey = 'gibrunner.currentStartedAt';
 let currentRequestId = '';
 let activePollRequestId = '';
-function setOut(v){ out.textContent = JSON.stringify(v, null, 2); }
-function setText(id, value){ document.getElementById(id).textContent = value || '-'; }
-function phaseLabel(phase){
-  return ({
-    queued: 'Menunggu runner GitHub',
-    validating: 'Memvalidasi token dan repo',
-    dispatching: 'Mengirim request ke GitHub Actions',
-    cloning: 'Clone/checkout repo',
-    provisioning: 'Menyiapkan runner dan akun login',
-    rustdesk_starting: 'Menjalankan RustDesk',
-    ready: 'Siap digunakan',
-    expiring: 'Sesi akan selesai',
-    failed: 'Gagal',
-    success: 'Selesai',
-    expired: 'Expired',
-    cancelled: 'Dibatalkan'
-  })[phase] || phase || '-';
-}
+let currentStartedAt = 0;
+
+function el(id){ return document.getElementById(id); }
+function setText(id, value){ el(id).textContent = value || '-'; }
+function setNotice(type, message){ const n = el('notice'); n.className = 'notice ' + type; n.textContent = message; }
+function clearNotice(){ const n = el('notice'); n.className = 'notice'; n.textContent = ''; }
+function phaseStep(phase){ if(['queued','validating','dispatching'].includes(phase)) return 1; if(['cloning','provisioning'].includes(phase)) return 2; if(phase === 'ssh_starting') return 3; if(phase === 'ready') return 4; return 1; }
+function userTitle(session){ if(session.status === 'failed') return 'Setup could not be completed'; if(session.status === 'expired') return 'Session expired'; if(session.status === 'cancelled') return 'Session terminated'; if(session.phase === 'ready') return 'Session ready'; if(session.phase === 'ssh_starting') return 'Starting SSH access'; if(['cloning','provisioning'].includes(session.phase)) return 'Preparing environment'; return 'Validating access'; }
+function setButtons(isRunning){ el('create_btn').disabled = isRunning; el('terminate_btn').disabled = !currentRequestId || !isRunning; }
+function updateSteps(step, terminalFailed){ ['validate','prepare','connect','ready'].forEach(function(name, index){ const node = el('step_' + name); node.className = 'step'; if(index + 1 < step) node.classList.add('done'); if(index + 1 === step) node.classList.add(terminalFailed ? 'error' : 'active'); }); }
 function renderStatus(session){
-  statusBox.style.display = 'block';
-  setText('status_text', session.status || '-');
-  setText('phase_text', phaseLabel(session.phase));
-  setText('repo_text', session.repo || '-');
-  setText('expires_text', session.expires_at ? new Date(session.expires_at).toLocaleString() : '-');
-  setText('last_checked_text', new Date().toLocaleTimeString());
+  el('status_panel').style.display = 'block';
+  const step = phaseStep(session.phase);
+  updateSteps(step, session.status === 'failed');
+  setText('status_title', userTitle(session));
+  const elapsed = currentStartedAt ? Math.floor((Date.now() - currentStartedAt) / 1000) : 0;
+  const suffix = elapsed > 0 ? 'Elapsed ' + Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's' : 'Live progress';
+  setText('status_meta', suffix + ' · Last checked ' + new Date().toLocaleTimeString());
+  setText('detail_repo', session.repo || '-');
+  setText('detail_expires', session.expires_at ? new Date(session.expires_at).toLocaleString() : '-');
+  setText('detail_updated', session.updated_at ? new Date(session.updated_at).toLocaleTimeString() : '-');
+  el('detail_workflow').innerHTML = session.workflow_url ? '<a href="' + session.workflow_url + '" target="_blank" rel="noopener">Open run</a>' : '-';
+  if(elapsed > 90 && session.phase !== 'ready') { const w = el('wait_notice'); w.className = 'notice warn'; w.textContent = 'This is taking longer than usual, but the runner is still working. You can keep this page open or come back later.'; }
+  setButtons(['queued','running'].includes(session.status));
 }
 function renderConnection(conn){
-  if(!conn){ connectionBox.style.display = 'none'; return; }
-  connectionBox.style.display = 'block';
-  setText('conn_rustdesk_id', conn.rustdesk_id || '-');
-  setText('conn_rustdesk_password', conn.rustdesk_password || '-');
+  if(!conn) return;
+  el('connection_box').style.display = 'block';
   setText('conn_tmate_ssh', conn.tmate_ssh || '-');
   setText('conn_tmate_web', conn.tmate_web || '-');
 }
-function showActiveSessionToast(reqId, session){
-  currentRequestId = reqId || currentRequestId;
-  const status = session?.status || 'running';
-  const phase = session?.phase || 'queued';
-  const repo = session?.repo || 'current repo';
-  activeSessionToastBody.textContent = repo + ' has an active session (' + status + ' / ' + phase + '). You can keep watching progress, cancel this message, or terminate the workflow session.';
-  activeSessionToast.style.display = 'block';
-}
-function hideActiveSessionToast(){
-  activeSessionToast.style.display = 'none';
-}
 async function poll(reqId){
-  currentRequestId = reqId;
-  activePollRequestId = reqId;
-  localStorage.setItem(storageKey, reqId);
-  let done = false;
+  currentRequestId = reqId; activePollRequestId = reqId; localStorage.setItem(storageKey, reqId); if(!currentStartedAt){ currentStartedAt = Date.now(); localStorage.setItem(startedKey, String(currentStartedAt)); }
   let shownConnection = false;
-  while(!done && activePollRequestId === reqId){
+  while(activePollRequestId === reqId){
     const r = await fetch('/api/v1/session/status?request_id=' + encodeURIComponent(reqId));
     const j = await r.json();
-    setOut(j);
-    if(r.ok){ renderStatus(j); }
-    done = ['success','failed','expired','cancelled'].includes(j.status);
-    if((j.phase === 'ready' || done) && !shownConnection){
-      const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId));
-      const cj = await c.json();
-      if(c.ok){
-        renderConnection(cj.connection);
-        setOut({ status: j, connection: cj });
-        shownConnection = true;
-      }
-    }
-    if(done){
-      localStorage.removeItem(storageKey);
-      break;
-    }
-    await new Promise(x => setTimeout(x, 4000));
+    if(r.ok) renderStatus(j);
+    if(r.ok && (j.phase === 'ready' || j.status === 'success') && !shownConnection){ const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId)); const cj = await c.json(); if(c.ok){ renderConnection(cj.connection); shownConnection = true; setNotice('info','Your session is ready. Copy the connection details below.'); } }
+    if(['success','failed','expired','cancelled'].includes(j.status)){ if(j.status === 'failed') setNotice('error', j.error?.message || 'The session could not be prepared.'); localStorage.removeItem(storageKey); localStorage.removeItem(startedKey); setButtons(false); break; }
+    await new Promise(function(resolve){ setTimeout(resolve, 4000); });
   }
 }
-document.getElementById('create_btn').addEventListener('click', async () => {
-  notice.textContent = '';
-    const body = {
-    os_runner: document.getElementById('os_runner').value,
-    duration_minutes: Number(document.getElementById('duration_minutes').value),
-    username: document.getElementById('username').value.trim(),
-    password: document.getElementById('password').value,
-    github_token: document.getElementById('github_token').value
-  };
-  const r = await fetch('/api/v1/session/create', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-idempotency-key': crypto.randomUUID() },
-    body: JSON.stringify(body)
-  });
+async function createSession(){
+  clearNotice();
+  const token = el('github_token').value.trim();
+  if(!token){ setNotice('error','Please enter your GitHub token.'); return; }
+  setButtons(true); el('connection_box').style.display = 'none'; currentStartedAt = Date.now(); localStorage.setItem(startedKey, String(currentStartedAt)); setNotice('info','Starting your session. This usually takes 2-6 minutes.');
+  const body = { os_runner:'ubuntu-latest', duration_minutes:Number(el('duration_minutes').value), github_token:token };
+  const r = await fetch('/api/v1/session/create', { method:'POST', headers:{ 'content-type':'application/json', 'x-idempotency-key':crypto.randomUUID() }, body:JSON.stringify(body) });
   const j = await r.json();
-  setOut(j);
-  if(!r.ok){
-    if((r.status === 409 && j?.error?.code === 'SESSION_ALREADY_ACTIVE') || (r.status === 429 && j?.error?.code === 'RATE_LIMITED' && j?.error?.details?.active_request_id)){
-      const reqId = j?.error?.details?.active_request_id;
-      const session = j?.error?.details?.active_session;
-      notice.textContent = 'Active session found. Showing live progress...';
-      notice.className = '';
-      if(reqId){
-        showActiveSessionToast(reqId, session);
-        poll(reqId);
-      }
-      return;
-    }
-    notice.textContent = j?.error?.message || 'Failed'; notice.className='error'; return;
-  }
-  notice.textContent = 'Session queued. Polling status...'; notice.className='';
-  currentRequestId = j.request_id;
-  localStorage.setItem(storageKey, j.request_id);
-  poll(j.request_id);
-});
-
-document.getElementById('generate_password_btn').addEventListener('click', () => {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*()-_=+[]{}';
-  let pass = '';
-  for (let i = 0; i < 16; i++) {
-    pass += chars[Math.floor(Math.random() * chars.length)];
-  }
-  document.getElementById('password').value = pass;
-});
-
-document.querySelectorAll('[data-copy]').forEach((btn) => {
-  btn.addEventListener('click', async () => {
-    const id = btn.getAttribute('data-copy');
-    const label = btn.getAttribute('data-label') || 'Copy';
-    const text = document.getElementById(id).textContent || '';
-    if(text && text !== '-'){
-      await navigator.clipboard.writeText(text);
-      btn.textContent = 'Copied';
-      setTimeout(() => { btn.textContent = label; }, 1200);
-    }
-  });
-});
-
-async function terminateCurrentSession(){
-  const token = document.getElementById('github_token').value;
-  if(!currentRequestId){
-    notice.textContent = 'No active request_id to terminate yet.';
-    notice.className = 'error';
-    return;
-  }
-  const r = await fetch('/api/v1/session/cancel', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ request_id: currentRequestId, github_token: token })
-  });
-  const j = await r.json();
-  setOut(j);
-  if(!r.ok){
-    notice.textContent = j?.error?.message || 'Failed to terminate session';
-    notice.className = 'error';
-    return;
-  }
-  notice.textContent = 'Session ' + currentRequestId + ' terminated.';
-  notice.className = '';
-  connectionBox.style.display = 'none';
-  localStorage.removeItem(storageKey);
-  hideActiveSessionToast();
+  if(!r.ok){ setButtons(false); if((r.status === 409 && j?.error?.details?.active_request_id) || (r.status === 429 && j?.error?.details?.active_request_id)){ currentRequestId = j.error.details.active_request_id; el('active_session_toast_body').textContent = 'A session is already running. You can watch the existing progress or terminate it.'; el('active_session_toast').style.display = 'block'; return; } setNotice('error', j?.error?.message || 'Unable to start the session.'); return; }
+  currentRequestId = j.request_id; poll(j.request_id);
 }
-
-document.getElementById('terminate_btn').addEventListener('click', terminateCurrentSession);
-document.getElementById('toast_terminate_btn').addEventListener('click', terminateCurrentSession);
-document.getElementById('toast_cancel_btn').addEventListener('click', hideActiveSessionToast);
-
-document.getElementById('check_logs_btn').addEventListener('click', async () => {
-  const token = document.getElementById('github_token').value;
-  if(!currentRequestId){
-    notice.textContent = 'No request_id selected yet.';
-    notice.className = 'error';
-    return;
-  }
-  const r = await fetch('/api/v1/session/logs', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ request_id: currentRequestId, github_token: token })
-  });
-  const j = await r.json();
-  setOut(j);
-  notice.textContent = r.ok ? 'Workflow job logs loaded.' : (j?.error?.message || 'Failed to load logs');
-  notice.className = r.ok ? '' : 'error';
-});
-
-const restoredRequestId = localStorage.getItem(storageKey);
-if(restoredRequestId){
-  notice.textContent = 'Restored active session. Auto-updating progress...';
-  currentRequestId = restoredRequestId;
-  poll(restoredRequestId);
-}
+async function terminateCurrentSession(){ if(!currentRequestId){ setNotice('error','There is no active session to terminate.'); return; } const r = await fetch('/api/v1/session/cancel', { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ request_id:currentRequestId, github_token:el('github_token').value.trim() }) }); const j = await r.json(); if(!r.ok){ setNotice('error', j?.error?.message || 'Unable to terminate the session.'); return; } activePollRequestId = ''; localStorage.removeItem(storageKey); localStorage.removeItem(startedKey); setButtons(false); setNotice('info','Session terminated.'); }
+document.querySelectorAll('[data-copy]').forEach(function(btn){ btn.addEventListener('click', async function(){ const id = btn.getAttribute('data-copy'); const text = el(id).textContent || ''; if(text && text !== '-'){ await navigator.clipboard.writeText(text); const old = btn.textContent; btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = old; }, 1200); } }); });
+document.querySelectorAll('[data-toggle-input]').forEach(function(btn){ btn.addEventListener('click', function(){ const input = el(btn.getAttribute('data-toggle-input')); const visible = input.type === 'text'; input.type = visible ? 'password' : 'text'; btn.textContent = visible ? 'Show' : 'Hide'; }); });
+el('create_btn').addEventListener('click', createSession); el('terminate_btn').addEventListener('click', terminateCurrentSession); el('toast_terminate_btn').addEventListener('click', terminateCurrentSession); el('toast_watch_btn').addEventListener('click', function(){ el('active_session_toast').style.display = 'none'; if(currentRequestId) poll(currentRequestId); });
+el('token_guide_btn').addEventListener('click', function(){ el('token_guide_modal').classList.add('open'); });
+el('token_guide_close').addEventListener('click', function(){ el('token_guide_modal').classList.remove('open'); });
+el('token_guide_modal').addEventListener('click', function(event){ if(event.target === el('token_guide_modal')) el('token_guide_modal').classList.remove('open'); });
+const restoredRequestId = localStorage.getItem(storageKey); if(restoredRequestId){ currentStartedAt = Number(localStorage.getItem(startedKey) || Date.now()); setNotice('info','Restored your previous session. Checking the latest progress now.'); poll(restoredRequestId); }
 </script>
 </body>
 </html>`;
 
 const UBUNTU_WORKFLOW_FILE = `.github/workflows/create-ubuntu.yml`;
-const WINDOWS_WORKFLOW_FILE = `.github/workflows/create-windows.yml`;
 
 function createWorkflowContent(workflowName: string, runsOn: string): string {
   return `name: ${workflowName}
-run-name: ${workflowName}-\${{ inputs.request_id }}
+run-name: ${workflowName}-\${{ github.event.inputs.request_id }}
 
 on:
   workflow_dispatch:
     inputs:
       request_id:
         required: true
-        type: string
       duration_minutes:
         required: true
-        type: string
-      username:
-        required: true
-        type: string
-      password:
-        required: true
-        type: string
       callback_url:
         required: true
-        type: string
       callback_secret:
         required: true
-        type: string
 
 jobs:
   run:
@@ -381,107 +373,57 @@ jobs:
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
             -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"running","phase":"provisioning"}'
 
-      - name: Notify RustDesk starting
+      - name: Notify SSH starting
         shell: bash
         run: |
           curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
             -H "content-type: application/json" \\
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
-            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"running","phase":"rustdesk_starting"}'
+            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"running","phase":"ssh_starting"}'
 
-      - name: Setup Linux user and RustDesk
+      - name: Setup Linux user and SSH tunnel
         if: runner.os == 'Linux'
         timeout-minutes: 6
         shell: bash
         run: |
           set -euo pipefail
           fail() {
+            line_no="$1"
+            payload=$(jq -cn --arg req "\${{ github.event.inputs.request_id }}" --arg ln "$line_no" '{request_id:$req,status:"failed",phase:"failed",error:{code:"SSH_SETUP_FAILED",message:("SSH setup failed near line " + $ln),troubleshooting:["Open workflow logs","Check tmate setup step","Retry session"]}}')
             curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
               -H "content-type: application/json" \\
               -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
-              -d "{\"request_id\":\"\${{ github.event.inputs.request_id }}\",\"status\":\"failed\",\"phase\":\"failed\",\"error\":{\"code\":\"RUSTDESK_INSTALL_FAILED\",\"message\":\"Linux RustDesk setup failed near line $1\",\"troubleshooting\":[\"Open the GitHub Actions run URL for full logs\",\"Check whether RustDesk .deb dependencies installed correctly\",\"Terminate the session and retry\"]}}" || true
+              -d "$payload" || true
           }
           trap 'fail "$LINENO"' ERR
-          sudo useradd -m \${{ github.event.inputs.username }} || true
-          echo "\${{ github.event.inputs.username }}:\${{ github.event.inputs.password }}" | sudo chpasswd
           sudo apt-get update
-          sudo apt-get install -y curl ca-certificates jq
-          DEB_URL=$(curl -fsSL https://api.github.com/repos/rustdesk/rustdesk/releases/latest | jq -r '.assets[] | select(.name | test("x86_64.*\\.deb$")) | .browser_download_url' | head -n 1)
-          if [ -z "$DEB_URL" ]; then echo "RustDesk .deb asset not found"; exit 40; fi
-          timeout 90s curl -fL "$DEB_URL" -o /tmp/rustdesk.deb
-          sudo apt-get install -y /tmp/rustdesk.deb || sudo apt-get install -f -y
-          (nohup rustdesk --service >/tmp/rustdesk.log 2>&1 &) || true
-          sleep 8
+          sudo apt-get install -y curl ca-certificates jq tmate
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          sleep 2
 
-      - name: Setup Windows user and RustDesk
-        if: runner.os == 'Windows'
-        timeout-minutes: 6
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          try {
-            $u = "\${{ github.event.inputs.username }}"
-            $p = ConvertTo-SecureString "\${{ github.event.inputs.password }}" -AsPlainText -Force
-            if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { New-LocalUser -Name $u -Password $p }
-            Set-LocalUser -Name $u -Password $p
-            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
-            $asset = $release.assets | Where-Object { $_.name -match "x86_64.*\.exe$" } | Select-Object -First 1
-            if (-not $asset) { throw "RustDesk .exe asset not found" }
-            $installer = Join-Path $env:TEMP "rustdesk.exe"
-            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
-            $proc = Start-Process $installer -ArgumentList "--silent-install" -PassThru
-            if (-not $proc.WaitForExit(120000)) { Stop-Process -Id $proc.Id -Force; throw "RustDesk installer timeout" }
-            $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
-            if (-not (Test-Path $rustdesk)) { throw "RustDesk executable not found after install" }
-            Start-Process $rustdesk -ArgumentList "--service"
-            Start-Sleep -Seconds 8
-          } catch {
-            $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "failed"; phase = "failed"; error = @{ code = "RUSTDESK_INSTALL_FAILED"; message = $_.Exception.Message; troubleshooting = @("Open the GitHub Actions run URL for full logs", "Check RustDesk installer/start step", "Terminate the session and retry") } } | ConvertTo-Json -Depth 5
-            Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
-            throw
-          }
-
-      - name: Get Linux RustDesk info and notify ready
+      - name: Get SSH info and notify ready
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          RID="unknown"
-          RPW="\${{ github.event.inputs.password }}"
-          for i in {1..10}; do
-            if command -v rustdesk >/dev/null 2>&1; then RID=$(timeout 10s rustdesk --get-id 2>/dev/null || true); fi
-            if [ -n "$RID" ] && [ "$RID" != "unknown" ]; then break; fi
-            sleep 6
-          done
-          if [ -z "$RID" ] || [ "$RID" = "unknown" ]; then
+          TMATE_SSH=""
+          TMATE_WEB=""
+          if command -v tmate >/dev/null 2>&1; then
+            TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
+            TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}' 2>/dev/null || true)
+          fi
+          if [ -z "$TMATE_SSH" ] && [ -z "$TMATE_WEB" ]; then
             curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
               -H "content-type: application/json" \\
               -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
-              -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"RUSTDESK_ID_MISSING","message":"RustDesk started but ID could not be read","troubleshooting":["Open the GitHub Actions log for RustDesk output","Try ubuntu-latest first","Retry after terminating this session"]}}'
+              -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"SSH_LINK_MISSING","message":"SSH access could not be created","troubleshooting":["Open the GitHub Actions log for tmate output","Retry after terminating this session"]}}'
             exit 42
           fi
-          curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
+          payload=$(jq -cn --arg req "\${{ github.event.inputs.request_id }}" --arg ssh "$TMATE_SSH" --arg web "$TMATE_WEB" '{request_id:$req,status:"running",phase:"ready",connection:{tmate_ssh:$ssh,tmate_web:$web}}')
+          curl -fsS -X POST "\${{ github.event.inputs.callback_url }}" \\
             -H "content-type: application/json" \\
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
-            -d "{\"request_id\":\"\${{ github.event.inputs.request_id }}\",\"status\":\"running\",\"phase\":\"ready\",\"connection\":{\"rustdesk_id\":\"$RID\",\"rustdesk_password\":\"$RPW\"}}"
-
-      - name: Get Windows RustDesk info and notify ready
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $rid = "unknown"
-          $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
-          for ($i = 0; $i -lt 10; $i++) {
-            if (Test-Path $rustdesk) { $rid = (& $rustdesk --get-id 2>$null) }
-            if ($rid -and $rid -ne "unknown") { break }
-            Start-Sleep -Seconds 6
-          }
-          if (-not $rid -or $rid -eq "unknown") {
-            $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "failed"; phase = "failed"; error = @{ code = "RUSTDESK_ID_MISSING"; message = "RustDesk started but ID could not be read"; troubleshooting = @("Open the GitHub Actions log for RustDesk output", "Try ubuntu-latest first", "Retry after terminating this session") } } | ConvertTo-Json -Depth 5
-            Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
-            exit 42
-          }
-          $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "running"; phase = "ready"; connection = @{ rustdesk_id = $rid; rustdesk_password = "\${{ github.event.inputs.password }}" } } | ConvertTo-Json -Depth 5
-          Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
+            -d "$payload"
 
       - name: Hold session
         shell: bash
@@ -506,12 +448,11 @@ jobs:
           curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
             -H "content-type: application/json" \\
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
-            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"WORKFLOW_FAILED","message":"Workflow failed before RustDesk became ready","troubleshooting":["Open the workflow logs from the GitHub Actions run URL","Check RustDesk install/start step","Terminate the session and retry"]}}'
+            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"WORKFLOW_FAILED","message":"Workflow failed before SSH access became ready","troubleshooting":["Open the workflow logs from the GitHub Actions run URL","Check tmate setup step","Terminate the session and retry"]}}'
 `;
 }
 
 const UBUNTU_WORKFLOW_CONTENT = createWorkflowContent("create-ubuntu", "ubuntu-latest");
-const WINDOWS_WORKFLOW_CONTENT = createWorkflowContent("create-windows", "windows-latest");
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -564,16 +505,14 @@ async function handleAllowlist(env: Env): Promise<Response> {
 
 async function handleCreate(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as Record<string, unknown>;
-  const osRunner = str(body.os_runner) as "ubuntu-latest" | "windows-latest";
+  const osRunner = str(body.os_runner) as "ubuntu-latest";
   const durationMinutes = Number(body.duration_minutes);
-  const username = str(body.username);
-  const password = str(body.password);
   const githubToken = str(body.github_token);
 
-  const validation = validateCreateInput(osRunner, durationMinutes, username, password, githubToken, env);
+  const validation = validateCreateInput(osRunner, durationMinutes, githubToken, env);
   if (validation) return validation;
 
-  const repoResolve = await resolveOrCreateUserRepo(env, githubToken);
+  const repoResolve = await resolveTargetRepoFromAllowlist(env, githubToken);
   if (!repoResolve.ok) return repoResolve.response;
   const repo = repoResolve.repo;
 
@@ -601,6 +540,16 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
 
   const repoMeta = await ghGetRepo(repo, githubToken);
   if (!repoMeta.ok) return repoMeta.response;
+  if (!repoMeta.data.can_push) {
+    return jsonError(403, "REPO_NOT_WRITABLE", "Token can read target repo but cannot write workflow files", {
+      repo,
+      troubleshooting: [
+        "Use a token with write access to the selected repo",
+        "Update allowlist to include a repo where this token has push access",
+        "Or remove allowlist entries so GibRunner uses your own gibrunner repo"
+      ]
+    });
+  }
 
   const requestId = `req_${crypto.randomUUID()}`;
   const now = new Date();
@@ -610,8 +559,6 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
     inputs: {
       request_id: requestId,
       duration_minutes: String(durationMinutes),
-      username,
-      password,
       callback_url: `${new URL(request.url).origin}/api/v1/webhook/github`,
       callback_secret: env.WEBHOOK_SECRET
     }
@@ -620,7 +567,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
   const workflowReady = await ensureWorkflowFiles(repo, repoMeta.data.default_branch, githubToken);
   if (!workflowReady.ok) return workflowReady.response;
 
-  const workflowFile = osRunner === "windows-latest" ? WINDOWS_WORKFLOW_FILE : UBUNTU_WORKFLOW_FILE;
+  const workflowFile = UBUNTU_WORKFLOW_FILE;
   const dispatch = await ghDispatchWorkflow(repo, workflowFile, githubToken, runPayload);
   if (!dispatch.ok) return dispatch.response;
 
@@ -650,20 +597,16 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
 }
 
 function validateCreateInput(
-  osRunner: "ubuntu-latest" | "windows-latest",
+  osRunner: "ubuntu-latest",
   durationMinutes: number,
-  username: string,
-  password: string,
   githubToken: string,
   env: Env
 ): Response | null {
-  if (!["ubuntu-latest", "windows-latest"].includes(osRunner)) return jsonError(400, "VALIDATION_ERROR", "Unsupported os_runner");
+  if (osRunner !== "ubuntu-latest") return jsonError(400, "VALIDATION_ERROR", "Unsupported os_runner (linux only)");
   const max = Number(env.MAX_SESSION_MINUTES || "240");
   if (!Number.isFinite(durationMinutes) || durationMinutes < 15 || durationMinutes > max) {
     return jsonError(400, "VALIDATION_ERROR", `duration_minutes must be 15..${max}`);
   }
-  if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) return jsonError(400, "VALIDATION_ERROR", "Invalid username");
-  if (!isStrongPassword(password)) return jsonError(400, "VALIDATION_ERROR", "Password must be min 12 and contain upper/lower/number/symbol");
   if (!githubToken) return jsonError(400, "VALIDATION_ERROR", "github_token required");
   return null;
 }
@@ -677,7 +620,7 @@ async function resolveTargetRepoFromAllowlist(env: Env, githubToken: string): Pr
 
   for (const repo of repos) {
     const check = await ghGetRepo(repo, githubToken);
-    if (check.ok) return { ok: true, repo };
+    if (check.ok && check.data.can_push) return { ok: true, repo };
   }
 
   return resolveOrCreateUserRepo(env, githubToken);
@@ -702,9 +645,10 @@ async function handleStatus(url: URL, env: Env): Promise<Response> {
   const record = await env.APP_KV.get(`status:${requestId}`, "json") as SessionRecord | null;
   if (!record) return jsonError(404, "NOT_FOUND", "Session not found");
 
-  const stalledPhases: SessionPhase[] = ["dispatching", "cloning", "provisioning", "rustdesk_starting"];
+  const stalledPhases: SessionPhase[] = ["dispatching", "cloning", "provisioning", "ssh_starting"];
   const staleMs = Date.now() - new Date(record.updated_at).getTime();
-  if (["queued", "running"].includes(record.status) && stalledPhases.includes(record.phase) && staleMs > 10 * 60_000) {
+  const staleThresholdMs = Math.max(600, Number(env.STATUS_STALE_SECONDS || "600")) * 1000;
+  if (["queued", "running"].includes(record.status) && stalledPhases.includes(record.phase) && staleMs > staleThresholdMs) {
     record.status = "failed";
     record.phase = "failed";
     record.updated_at = new Date().toISOString();
@@ -833,9 +777,7 @@ async function consumeCreateRateLimit(env: Env, ip: string): Promise<boolean> {
 }
 
 async function ensureWorkflowFiles(repo: string, branch: string, token: string): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const ubuntu = await ensureWorkflowFile(repo, branch, token, UBUNTU_WORKFLOW_FILE, UBUNTU_WORKFLOW_CONTENT);
-  if (!ubuntu.ok) return ubuntu;
-  return ensureWorkflowFile(repo, branch, token, WINDOWS_WORKFLOW_FILE, WINDOWS_WORKFLOW_CONTENT);
+  return ensureWorkflowFile(repo, branch, token, UBUNTU_WORKFLOW_FILE, UBUNTU_WORKFLOW_CONTENT);
 }
 
 async function ensureWorkflowFile(repo: string, branch: string, token: string, workflowFile: string, workflowContent: string): Promise<{ ok: true } | { ok: false; response: Response }> {
@@ -843,6 +785,7 @@ async function ensureWorkflowFile(repo: string, branch: string, token: string, w
   const check = await ghApi(checkUrl, token, { method: "GET" });
   const putUrl = `https://api.github.com/repos/${repo}/contents/${workflowFile}`;
   const content = toBase64(workflowContent);
+  const workflowName = workflowFile.split("/").pop() || workflowFile;
 
   if (check.status === 200) {
     const existing = (await check.json()) as { sha: string; content?: string };
@@ -858,19 +801,39 @@ async function ensureWorkflowFile(repo: string, branch: string, token: string, w
   }
   if (check.status !== 404) return { ok: false, response: await toGitHubError(check, "Failed to check workflow file") };
 
+  const existingWorkflow = await ghApi(`https://api.github.com/repos/${repo}/actions/workflows/${workflowName}`, token, { method: "GET" });
+  if (existingWorkflow.status >= 200 && existingWorkflow.status < 300) return { ok: true };
+  if (existingWorkflow.status !== 404) {
+    return { ok: false, response: await toGitHubError(existingWorkflow, "Failed to check workflow registration") };
+  }
+
   const put = await ghApi(putUrl, token, {
     method: "PUT",
     body: JSON.stringify({ message: `Add ${workflowFile}`, content, branch })
   });
   if (put.status >= 200 && put.status < 300) return { ok: true };
+  if (put.status === 404 || put.status === 403) {
+    return {
+      ok: false,
+      response: jsonError(502, "GITHUB_API_ERROR", "Token cannot create workflow files in target repo", {
+        github_status: put.status,
+        troubleshooting: [
+          "Use a token with repo and workflow scopes",
+          "Grant repository Contents read/write permission",
+          "Ensure token can access the target repository"
+        ]
+      })
+    };
+  }
   return { ok: false, response: await toGitHubError(put, "Failed to install workflow file") };
 }
 
-async function ghGetRepo(repo: string, token: string): Promise<{ ok: true; data: { default_branch: string } } | { ok: false; response: Response }> {
+async function ghGetRepo(repo: string, token: string): Promise<{ ok: true; data: { default_branch: string; can_push: boolean } } | { ok: false; response: Response }> {
   const resp = await ghApi(`https://api.github.com/repos/${repo}`, token, { method: "GET" });
   if (resp.status >= 200 && resp.status < 300) {
-    const data = (await resp.json()) as { default_branch: string };
-    return { ok: true, data };
+    const data = (await resp.json()) as { default_branch: string; permissions?: { push?: boolean; admin?: boolean; maintain?: boolean } };
+    const canPush = Boolean(data.permissions?.push || data.permissions?.admin || data.permissions?.maintain);
+    return { ok: true, data: { default_branch: data.default_branch, can_push: canPush } };
   }
   return { ok: false, response: await toGitHubError(resp, "Token cannot access target repo") };
 }
@@ -1030,8 +993,8 @@ async function toGitHubError(resp: Response, fallbackMessage: string): Promise<R
   let details: unknown;
   try {
     const j = (await resp.json()) as { message?: string; errors?: unknown };
-    message = j.message || fallbackMessage;
-    details = j.errors;
+    message = j.message ? `${fallbackMessage}: ${j.message}` : fallbackMessage;
+    details = { github_errors: j.errors };
   } catch {
     message = fallbackMessage;
   }
@@ -1040,10 +1003,6 @@ async function toGitHubError(resp: Response, fallbackMessage: string): Promise<R
 
 function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
-}
-
-function isStrongPassword(v: string): boolean {
-  return v.length >= 12 && /[A-Z]/.test(v) && /[a-z]/.test(v) && /[0-9]/.test(v) && /[^A-Za-z0-9]/.test(v);
 }
 
 function toBase64(input: string): string {
