@@ -1,6 +1,5 @@
 interface Env {
   APP_KV: KVNamespace;
-  CLIENT_KEY: string;
   WEBHOOK_SECRET: string;
   MAX_SESSION_MINUTES?: string;
   RATE_LIMIT_CREATE?: string;
@@ -67,6 +66,17 @@ const UI_HTML = `<!doctype html>
     button { background:var(--accent); color:#fff; border:none; font-weight:600; cursor:pointer; }
     button:disabled { opacity:.6; cursor:not-allowed; }
     pre { background:#f7f9fc; border:1px solid #dde5f2; border-radius:10px; padding:.75rem; overflow:auto; min-height:140px; }
+    .conn { margin-top: .8rem; padding: .8rem; background:#f8fbff; border:1px solid #d9e7ff; border-radius:10px; display:none; }
+    .conn-grid { display:grid; grid-template-columns:1fr auto; gap:.45rem; }
+    .conn-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#fff; border:1px solid #cfd9e8; border-radius:8px; padding:.5rem .6rem; overflow:auto; }
+    .copy-btn { width:auto; padding:.5rem .7rem; font-size:.85rem; }
+    .toast { position: fixed; right: 1rem; bottom: 1rem; width: min(420px, calc(100vw - 2rem)); background:#101827; color:#fff; border-radius:14px; box-shadow:0 14px 40px rgba(0,0,0,.22); padding:1rem; display:none; z-index:10; }
+    .toast-title { font-weight:700; margin-bottom:.25rem; }
+    .toast-body { color:#d7deea; font-size:.92rem; line-height:1.45; margin-bottom:.8rem; }
+    .toast-actions { display:flex; gap:.5rem; }
+    .toast-actions button { width:auto; padding:.55rem .75rem; }
+    .toast-secondary { background:#344056; }
+    .toast-danger { background:#b42318; }
     .full { grid-column: 1 / -1; }
     .error { color:var(--danger); font-weight:600; }
     @media (max-width: 720px){ .grid{grid-template-columns:1fr;} }
@@ -77,60 +87,176 @@ const UI_HTML = `<!doctype html>
     <div class="card">
       <h1>Create Runner Session</h1>
       <div class="grid">
-        <div class="full"><label>Client API Key</label><input id="client_key" type="password" /></div>
         <div class="full"><label>GitHub Token (PAT / Classic)</label><input id="github_token" type="password" /></div>
-        <div><label>Repo (owner/repo)</label><input id="repo" placeholder="owner/repo" /></div>
         <div><label>OS Runner</label><select id="os_runner"><option value="ubuntu-latest">ubuntu-latest</option><option value="windows-latest">windows-latest</option></select></div>
         <div><label>Duration (minutes, max 240)</label><input id="duration_minutes" type="number" value="120" min="15" max="240" /></div>
         <div><label>Username</label><input id="username" value="runneruser" /></div>
         <div class="full"><label>Password</label><input id="password" type="password" /></div>
+        <div class="full"><button id="generate_password_btn" type="button">Generate Password</button></div>
         <div class="full"><button id="create_btn">Create</button></div>
+        <div class="full"><button id="terminate_btn" type="button">Terminate Session</button></div>
       </div>
       <p id="notice"></p>
+      <div id="connection_box" class="conn">
+        <strong>Connection Info</strong>
+        <div class="conn-grid" style="margin-top:.5rem;">
+          <div id="conn_rustdesk_id" class="conn-code">-</div><button class="copy-btn" data-copy="conn_rustdesk_id" data-label="Copy ID">Copy ID</button>
+          <div id="conn_rustdesk_password" class="conn-code">-</div><button class="copy-btn" data-copy="conn_rustdesk_password" data-label="Copy Password">Copy Password</button>
+          <div id="conn_tmate_ssh" class="conn-code">-</div><button class="copy-btn" data-copy="conn_tmate_ssh" data-label="Copy SSH">Copy SSH</button>
+          <div id="conn_tmate_web" class="conn-code">-</div><button class="copy-btn" data-copy="conn_tmate_web" data-label="Copy Link">Copy Link</button>
+        </div>
+      </div>
       <pre id="output"></pre>
+    </div>
+  </div>
+  <div id="active_session_toast" class="toast">
+    <div class="toast-title">Active session still running</div>
+    <div id="active_session_toast_body" class="toast-body"></div>
+    <div class="toast-actions">
+      <button id="toast_cancel_btn" type="button" class="toast-secondary">Cancel</button>
+      <button id="toast_terminate_btn" type="button" class="toast-danger">Terminate Session</button>
     </div>
   </div>
 <script>
 const out = document.getElementById('output');
 const notice = document.getElementById('notice');
+const connectionBox = document.getElementById('connection_box');
+const activeSessionToast = document.getElementById('active_session_toast');
+const activeSessionToastBody = document.getElementById('active_session_toast_body');
+let currentRequestId = '';
 function setOut(v){ out.textContent = JSON.stringify(v, null, 2); }
-async function poll(reqId, key){
+function setText(id, value){ document.getElementById(id).textContent = value || '-'; }
+function renderConnection(conn){
+  if(!conn){ connectionBox.style.display = 'none'; return; }
+  connectionBox.style.display = 'block';
+  setText('conn_rustdesk_id', conn.rustdesk_id || '-');
+  setText('conn_rustdesk_password', conn.rustdesk_password || '-');
+  setText('conn_tmate_ssh', conn.tmate_ssh || '-');
+  setText('conn_tmate_web', conn.tmate_web || '-');
+}
+function showActiveSessionToast(reqId, session){
+  currentRequestId = reqId || currentRequestId;
+  const status = session?.status || 'running';
+  const phase = session?.phase || 'queued';
+  const repo = session?.repo || 'current repo';
+  activeSessionToastBody.textContent = repo + ' has an active session (' + status + ' / ' + phase + '). You can keep watching progress, cancel this message, or terminate the workflow session.';
+  activeSessionToast.style.display = 'block';
+}
+function hideActiveSessionToast(){
+  activeSessionToast.style.display = 'none';
+}
+async function poll(reqId){
+  currentRequestId = reqId;
   let done = false;
+  let shownConnection = false;
   while(!done){
-    const r = await fetch('/api/v1/session/status?request_id=' + encodeURIComponent(reqId), { headers: { 'x-client-key': key } });
+    const r = await fetch('/api/v1/session/status?request_id=' + encodeURIComponent(reqId));
     const j = await r.json();
     setOut(j);
     done = ['success','failed','expired','cancelled'].includes(j.status);
-    if(done && j.status === 'success'){
-      const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId), { headers: { 'x-client-key': key } });
+    if((j.phase === 'ready' || done) && !shownConnection){
+      const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId));
       const cj = await c.json();
-      setOut({ status: j, connection: cj });
+      if(c.ok){
+        renderConnection(cj.connection);
+        setOut({ status: j, connection: cj });
+        shownConnection = true;
+      }
     }
     await new Promise(x => setTimeout(x, done ? 0 : 8000));
   }
 }
 document.getElementById('create_btn').addEventListener('click', async () => {
   notice.textContent = '';
-  const body = {
-    repo: document.getElementById('repo').value.trim(),
+    const body = {
     os_runner: document.getElementById('os_runner').value,
     duration_minutes: Number(document.getElementById('duration_minutes').value),
     username: document.getElementById('username').value.trim(),
     password: document.getElementById('password').value,
     github_token: document.getElementById('github_token').value
   };
-  const key = document.getElementById('client_key').value;
   const r = await fetch('/api/v1/session/create', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-client-key': key, 'x-idempotency-key': crypto.randomUUID() },
+    headers: { 'content-type': 'application/json', 'x-idempotency-key': crypto.randomUUID() },
     body: JSON.stringify(body)
   });
   const j = await r.json();
   setOut(j);
-  if(!r.ok){ notice.textContent = j?.error?.message || 'Failed'; notice.className='error'; return; }
+  if(!r.ok){
+    if((r.status === 409 && j?.error?.code === 'SESSION_ALREADY_ACTIVE') || (r.status === 429 && j?.error?.code === 'RATE_LIMITED' && j?.error?.details?.active_request_id)){
+      const reqId = j?.error?.details?.active_request_id;
+      const session = j?.error?.details?.active_session;
+      notice.textContent = 'Active session found. Showing live progress...';
+      notice.className = '';
+      if(reqId){
+        showActiveSessionToast(reqId, session);
+        poll(reqId);
+      }
+      return;
+    }
+    notice.textContent = j?.error?.message || 'Failed'; notice.className='error'; return;
+  }
   notice.textContent = 'Session queued. Polling status...'; notice.className='';
-  poll(j.request_id, key);
+  currentRequestId = j.request_id;
+  poll(j.request_id);
 });
+
+document.getElementById('generate_password_btn').addEventListener('click', () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*()-_=+[]{}';
+  let pass = '';
+  for (let i = 0; i < 16; i++) {
+    pass += chars[Math.floor(Math.random() * chars.length)];
+  }
+  document.getElementById('password').value = pass;
+});
+
+document.querySelectorAll('[data-copy]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const id = btn.getAttribute('data-copy');
+    const label = btn.getAttribute('data-label') || 'Copy';
+    const text = document.getElementById(id).textContent || '';
+    if(text && text !== '-'){
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = label; }, 1200);
+    }
+  });
+});
+
+async function terminateCurrentSession(){
+  const token = document.getElementById('github_token').value;
+  if(!currentRequestId){
+    notice.textContent = 'No active request_id to terminate yet.';
+    notice.className = 'error';
+    return;
+  }
+  if(!token){
+    notice.textContent = 'GitHub token is required to terminate session.';
+    notice.className = 'error';
+    return;
+  }
+
+  const r = await fetch('/api/v1/session/cancel', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ request_id: currentRequestId, github_token: token })
+  });
+  const j = await r.json();
+  setOut(j);
+  if(!r.ok){
+    notice.textContent = j?.error?.message || 'Failed to terminate session';
+    notice.className = 'error';
+    return;
+  }
+  notice.textContent = 'Session ' + currentRequestId + ' terminated.';
+  notice.className = '';
+  connectionBox.style.display = 'none';
+  hideActiveSessionToast();
+}
+
+document.getElementById('terminate_btn').addEventListener('click', terminateCurrentSession);
+document.getElementById('toast_terminate_btn').addEventListener('click', terminateCurrentSession);
+document.getElementById('toast_cancel_btn').addEventListener('click', hideActiveSessionToast);
 </script>
 </body>
 </html>`;
@@ -251,10 +377,6 @@ export default {
       return jsonError(404, "NOT_FOUND", "Route not found");
     }
 
-    if (!isAuthorizedClient(request, env)) {
-      return jsonError(401, "UNAUTHORIZED_CLIENT", "Invalid client key");
-    }
-
     if (request.method === "GET" && url.pathname === "/api/v1/allowlist/repos") {
       return handleAllowlist(env);
     }
@@ -283,11 +405,6 @@ export default {
   }
 };
 
-function isAuthorizedClient(request: Request, env: Env): boolean {
-  const incoming = request.headers.get("x-client-key");
-  return Boolean(env.CLIENT_KEY) && incoming === env.CLIENT_KEY;
-}
-
 async function handleAllowlist(env: Env): Promise<Response> {
   const keys = await env.APP_KV.list({ prefix: "allowlist:" });
   const repos = keys.keys.map((k) => k.name.replace("allowlist:", ""));
@@ -295,29 +412,38 @@ async function handleAllowlist(env: Env): Promise<Response> {
 }
 
 async function handleCreate(request: Request, env: Env): Promise<Response> {
-  const ip = request.headers.get("cf-connecting-ip") || "unknown";
-  if (!(await consumeCreateRateLimit(env, ip))) {
-    return jsonError(429, "RATE_LIMITED", "Too many create requests");
-  }
-
   const body = (await request.json()) as Record<string, unknown>;
-  const repo = str(body.repo);
   const osRunner = str(body.os_runner) as "ubuntu-latest" | "windows-latest";
   const durationMinutes = Number(body.duration_minutes);
   const username = str(body.username);
   const password = str(body.password);
   const githubToken = str(body.github_token);
 
-  const validation = validateCreateInput(repo, osRunner, durationMinutes, username, password, githubToken, env);
+  const validation = validateCreateInput(osRunner, durationMinutes, username, password, githubToken, env);
   if (validation) return validation;
 
-  const isAllowed = await env.APP_KV.get(`allowlist:${repo}`);
-  if (!isAllowed) return jsonError(403, "REPO_NOT_ALLOWLISTED", "Repo is not allowlisted");
+  const repoResolve = await resolveTargetRepoFromAllowlist(env, githubToken);
+  if (!repoResolve.ok) return repoResolve.response;
+  const repo = repoResolve.repo;
+
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (!(await consumeCreateRateLimit(env, ip))) {
+    const active = await env.APP_KV.get(`active:${repo}`, "json") as SessionRecord | null;
+    const activeStatus = active ? (await env.APP_KV.get(`status:${active.request_id}`, "json") as SessionRecord | null) : null;
+    return jsonError(429, "RATE_LIMITED", "Too many create requests", {
+      active_request_id: active?.request_id,
+      active_session: activeStatus || active || null
+    });
+  }
 
   const activeKey = `active:${repo}`;
   const active = await env.APP_KV.get(activeKey, "json") as SessionRecord | null;
   if (active && ["queued", "running"].includes(active.status)) {
-    return jsonError(409, "SESSION_ALREADY_ACTIVE", "An active session already exists", { active_request_id: active.request_id });
+    const activeStatus = await env.APP_KV.get(`status:${active.request_id}`, "json") as SessionRecord | null;
+    return jsonError(409, "SESSION_ALREADY_ACTIVE", "An active session already exists", {
+      active_request_id: active.request_id,
+      active_session: activeStatus || active
+    });
   }
 
   const repoMeta = await ghGetRepo(repo, githubToken);
@@ -370,7 +496,6 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
 }
 
 function validateCreateInput(
-  repo: string,
   osRunner: "ubuntu-latest" | "windows-latest",
   durationMinutes: number,
   username: string,
@@ -378,7 +503,6 @@ function validateCreateInput(
   githubToken: string,
   env: Env
 ): Response | null {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return jsonError(400, "VALIDATION_ERROR", "repo must be owner/repo");
   if (!["ubuntu-latest", "windows-latest"].includes(osRunner)) return jsonError(400, "VALIDATION_ERROR", "Unsupported os_runner");
   const max = Number(env.MAX_SESSION_MINUTES || "240");
   if (!Number.isFinite(durationMinutes) || durationMinutes < 15 || durationMinutes > max) {
@@ -388,6 +512,34 @@ function validateCreateInput(
   if (!isStrongPassword(password)) return jsonError(400, "VALIDATION_ERROR", "Password must be min 12 and contain upper/lower/number/symbol");
   if (!githubToken) return jsonError(400, "VALIDATION_ERROR", "github_token required");
   return null;
+}
+
+async function resolveTargetRepoFromAllowlist(env: Env, githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
+  const keys = await env.APP_KV.list({ prefix: "allowlist:" });
+  const repos = keys.keys.map((k) => k.name.replace("allowlist:", ""));
+  if (repos.length === 0) {
+    return resolveOrCreateUserRepo(githubToken);
+  }
+
+  for (const repo of repos) {
+    const check = await ghGetRepo(repo, githubToken);
+    if (check.ok) return { ok: true, repo };
+  }
+
+  return resolveOrCreateUserRepo(githubToken);
+}
+
+async function resolveOrCreateUserRepo(githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
+  const viewer = await ghGetViewer(githubToken);
+  if (!viewer.ok) return { ok: false, response: viewer.response };
+  const repo = `${viewer.login}/gibrunner`;
+
+  const existing = await ghGetRepo(repo, githubToken);
+  if (existing.ok) return { ok: true, repo };
+
+  const created = await ghCreateRepo(githubToken, "gibrunner");
+  if (!created.ok) return { ok: false, response: created.response };
+  return { ok: true, repo };
 }
 
 async function handleStatus(url: URL, env: Env): Promise<Response> {
@@ -497,6 +649,24 @@ async function ghGetRepo(repo: string, token: string): Promise<{ ok: true; data:
     return { ok: true, data };
   }
   return { ok: false, response: await toGitHubError(resp, "Token cannot access target repo") };
+}
+
+async function ghGetViewer(token: string): Promise<{ ok: true; login: string } | { ok: false; response: Response }> {
+  const resp = await ghApi("https://api.github.com/user", token, { method: "GET" });
+  if (resp.status >= 200 && resp.status < 300) {
+    const data = (await resp.json()) as { login: string };
+    return { ok: true, login: data.login };
+  }
+  return { ok: false, response: await toGitHubError(resp, "Failed to read token user profile") };
+}
+
+async function ghCreateRepo(token: string, name: string): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const resp = await ghApi("https://api.github.com/user/repos", token, {
+    method: "POST",
+    body: JSON.stringify({ name, private: true, auto_init: true, description: "GibRunner target repository" })
+  });
+  if (resp.status >= 200 && resp.status < 300) return { ok: true };
+  return { ok: false, response: await toGitHubError(resp, "Failed to create user repository gibrunner") };
 }
 
 async function ghDispatchWorkflow(repo: string, token: string, payload: Record<string, unknown>): Promise<{ ok: true } | { ok: false; response: Response }> {

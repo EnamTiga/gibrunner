@@ -25,7 +25,6 @@ npm install
 3. Set secrets:
 
 ```bash
-wrangler secret put CLIENT_KEY
 wrangler secret put WEBHOOK_SECRET
 ```
 
@@ -50,7 +49,11 @@ npm run dev
 - `GET /api/v1/allowlist/repos`
 - `POST /api/v1/webhook/github`
 
-All `/api/v1/*` endpoints require header `x-client-key`.
+User UI only requires GitHub token input. Repository resolution order:
+
+1. Use first allowlisted repo accessible by the token.
+2. If none is accessible, use `${token_login}/gibrunner`.
+3. If `${token_login}/gibrunner` does not exist, create it automatically (private) then continue.
 
 ## Workflow installation
 
