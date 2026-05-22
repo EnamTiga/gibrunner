@@ -1,0 +1,13 @@
+name = "gibrunner"
+main = "src/index.ts"
+compatibility_date = "2026-05-22"
+
+[[kv_namespaces]]
+binding = "APP_KV"
+id = "ba7bc54bc20641dda03bbd445f9c373e"
+
+[vars]
+MAX_SESSION_MINUTES = "240"
+RATE_LIMIT_CREATE = "5"
+RATE_LIMIT_WINDOW_SECONDS = "600"
+STATUS_STALE_SECONDS = "15"

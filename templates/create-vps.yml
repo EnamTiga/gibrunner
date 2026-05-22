@@ -1,0 +1,93 @@
+name: create-vps
+run-name: create-vps-${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      os_runner:
+        required: true
+        type: string
+      request_id:
+        required: true
+        type: string
+      duration_minutes:
+        required: true
+        type: string
+      username:
+        required: true
+        type: string
+      password:
+        required: true
+        type: string
+      callback_url:
+        required: true
+        type: string
+      callback_secret:
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ${{ github.event.inputs.os_runner || 'ubuntu-latest' }}
+    timeout-minutes: 250
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify provisioning
+        shell: bash
+        run: |
+          curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "content-type: application/json" \
+            -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
+            -d '{"request_id":"${{ github.event.inputs.request_id }}","status":"running","phase":"provisioning"}'
+
+      - name: Setup Linux user and RustDesk
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo useradd -m ${{ github.event.inputs.username }} || true
+          echo "${{ github.event.inputs.username }}:${{ github.event.inputs.password }}" | sudo chpasswd
+          curl -L https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-x86_64.deb -o /tmp/rustdesk.deb || true
+          sudo dpkg -i /tmp/rustdesk.deb || sudo apt-get update && sudo apt-get install -f -y
+          nohup rustdesk --service >/tmp/rustdesk.log 2>&1 &
+
+      - name: Setup Windows user and RustDesk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $u = "${{ github.event.inputs.username }}"
+          $p = ConvertTo-SecureString "${{ github.event.inputs.password }}" -AsPlainText -Force
+          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { New-LocalUser -Name $u -Password $p }
+          Set-LocalUser -Name $u -Password $p
+          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-x86_64.exe" -OutFile "$env:TEMP\rustdesk.exe"
+          Start-Process "$env:TEMP\rustdesk.exe" -ArgumentList "--silent-install" -Wait
+          Start-Process "C:\Program Files\RustDesk\RustDesk.exe" -ArgumentList "--service"
+
+      - name: Get RustDesk info and notify ready
+        shell: bash
+        run: |
+          RID="unknown"
+          RPW="${{ github.event.inputs.password }}"
+          if command -v rustdesk >/dev/null 2>&1; then
+            RID=$(rustdesk --get-id || echo unknown)
+          fi
+          curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "content-type: application/json" \
+            -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
+            -d "{\"request_id\":\"${{ github.event.inputs.request_id }}\",\"status\":\"running\",\"phase\":\"ready\",\"connection\":{\"rustdesk_id\":\"$RID\",\"rustdesk_password\":\"$RPW\"}}"
+
+      - name: Hold session
+        shell: bash
+        run: |
+          mins=${{ github.event.inputs.duration_minutes }}
+          secs=$((mins*60))
+          sleep "$secs"
+
+      - name: Notify expired
+        if: always()
+        shell: bash
+        run: |
+          curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "content-type: application/json" \
+            -H "x-hook-signature: ${{ github.event.inputs.callback_secret }}" \
+            -d '{"request_id":"${{ github.event.inputs.request_id }}","status":"expired","phase":"expired"}'
