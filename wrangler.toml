@@ -2,6 +2,10 @@ name = "gibrunner"
 main = "src/index.ts"
 compatibility_date = "2026-05-22"
 
+routes = [
+  { pattern = "tools.enamtiga.link", custom_domain = true }
+]
+
 [[kv_namespaces]]
 binding = "APP_KV"
 id = "ba7bc54bc20641dda03bbd445f9c373e"

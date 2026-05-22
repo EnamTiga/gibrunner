@@ -44,13 +44,26 @@ interface ConnectionRecord {
 }
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+const PUBLIC_VPS_URL = "https://tools.enamtiga.link/vps";
 
 const UI_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>GibRunner</title>
+  <title>GibRunner VPS - Instant SSH Linux Sessions</title>
+  <meta name="description" content="Start secure temporary Linux VPS sessions with SSH and web terminal access from your GitHub token. Clean, fast, and browser-friendly." />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <link rel="canonical" href="https://tools.enamtiga.link/vps" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="GibRunner VPS - Instant SSH Linux Sessions" />
+  <meta property="og:description" content="Launch temporary Linux SSH sessions with a simple web interface and web terminal access." />
+  <meta property="og:url" content="https://tools.enamtiga.link/vps" />
+  <meta property="og:site_name" content="EnamTiga Tools" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="GibRunner VPS - Instant SSH Linux Sessions" />
+  <meta name="twitter:description" content="Launch temporary Linux SSH sessions with a simple web interface and web terminal access." />
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"GibRunner VPS","applicationCategory":"DeveloperApplication","operatingSystem":"Linux","url":"https://tools.enamtiga.link/vps","description":"Start secure temporary Linux VPS sessions with SSH and web terminal access."}</script>
   <style>
     :root { --bg:#f5f7fb; --surface:#ffffff; --surface2:#f8fafc; --line:#d9e1ec; --text:#111827; --muted:#5b6575; --soft:#eef4ff; --primary:#1d4ed8; --primary2:#1e40af; --success:#047857; --warning:#b45309; --danger:#b42318; --shadow:0 20px 60px rgba(15,23,42,.08); }
     * { box-sizing: border-box; }
@@ -264,6 +277,7 @@ const UI_HTML = `<!doctype html>
 <script>
 const storageKey = 'gibrunner.currentRequestId';
 const startedKey = 'gibrunner.currentStartedAt';
+const API_BASE = location.pathname.startsWith('/vps') ? '/vps/api/v1' : '/api/v1';
 let currentRequestId = '';
 let activePollRequestId = '';
 let currentStartedAt = 0;
@@ -301,10 +315,10 @@ async function poll(reqId){
   currentRequestId = reqId; activePollRequestId = reqId; localStorage.setItem(storageKey, reqId); if(!currentStartedAt){ currentStartedAt = Date.now(); localStorage.setItem(startedKey, String(currentStartedAt)); }
   let shownConnection = false;
   while(activePollRequestId === reqId){
-    const r = await fetch('/api/v1/session/status?request_id=' + encodeURIComponent(reqId));
+    const r = await fetch(API_BASE + '/session/status?request_id=' + encodeURIComponent(reqId));
     const j = await r.json();
     if(r.ok) renderStatus(j);
-    if(r.ok && (j.phase === 'ready' || j.status === 'success') && !shownConnection){ const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId)); const cj = await c.json(); if(c.ok){ renderConnection(cj.connection); shownConnection = true; setNotice('info','Your session is ready. Copy the connection details below.'); } }
+    if(r.ok && (j.phase === 'ready' || j.status === 'success') && !shownConnection){ const c = await fetch(API_BASE + '/session/connection?request_id=' + encodeURIComponent(reqId)); const cj = await c.json(); if(c.ok){ renderConnection(cj.connection); shownConnection = true; setNotice('info','Your session is ready. Copy the connection details below.'); } }
     if(['success','failed','expired','cancelled'].includes(j.status)){ if(j.status === 'failed') setNotice('error', j.error?.message || 'The session could not be prepared.'); localStorage.removeItem(storageKey); localStorage.removeItem(startedKey); setButtons(false); break; }
     await new Promise(function(resolve){ setTimeout(resolve, 4000); });
   }
@@ -315,12 +329,12 @@ async function createSession(){
   if(!token){ setNotice('error','Please enter your GitHub token.'); return; }
   setButtons(true); el('connection_box').style.display = 'none'; currentStartedAt = Date.now(); localStorage.setItem(startedKey, String(currentStartedAt)); setNotice('info','Starting your session. This usually takes 2-6 minutes.');
   const body = { os_runner:'ubuntu-latest', duration_minutes:Number(el('duration_minutes').value), github_token:token };
-  const r = await fetch('/api/v1/session/create', { method:'POST', headers:{ 'content-type':'application/json', 'x-idempotency-key':crypto.randomUUID() }, body:JSON.stringify(body) });
+  const r = await fetch(API_BASE + '/session/create', { method:'POST', headers:{ 'content-type':'application/json', 'x-idempotency-key':crypto.randomUUID() }, body:JSON.stringify(body) });
   const j = await r.json();
   if(!r.ok){ setButtons(false); if((r.status === 409 && j?.error?.details?.active_request_id) || (r.status === 429 && j?.error?.details?.active_request_id)){ currentRequestId = j.error.details.active_request_id; el('active_session_toast_body').textContent = 'A session is already running. You can watch the existing progress or terminate it.'; el('active_session_toast').style.display = 'block'; return; } setNotice('error', j?.error?.message || 'Unable to start the session.'); return; }
   currentRequestId = j.request_id; poll(j.request_id);
 }
-async function terminateCurrentSession(){ if(!currentRequestId){ setNotice('error','There is no active session to terminate.'); return; } const r = await fetch('/api/v1/session/cancel', { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ request_id:currentRequestId, github_token:el('github_token').value.trim() }) }); const j = await r.json(); if(!r.ok){ setNotice('error', j?.error?.message || 'Unable to terminate the session.'); return; } activePollRequestId = ''; localStorage.removeItem(storageKey); localStorage.removeItem(startedKey); setButtons(false); setNotice('info','Session terminated.'); }
+async function terminateCurrentSession(){ if(!currentRequestId){ setNotice('error','There is no active session to terminate.'); return; } const r = await fetch(API_BASE + '/session/cancel', { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ request_id:currentRequestId, github_token:el('github_token').value.trim() }) }); const j = await r.json(); if(!r.ok){ setNotice('error', j?.error?.message || 'Unable to terminate the session.'); return; } activePollRequestId = ''; localStorage.removeItem(storageKey); localStorage.removeItem(startedKey); setButtons(false); setNotice('info','Session terminated.'); }
 document.querySelectorAll('[data-copy]').forEach(function(btn){ btn.addEventListener('click', async function(){ const id = btn.getAttribute('data-copy'); const text = el(id).textContent || ''; if(text && text !== '-'){ await navigator.clipboard.writeText(text); const old = btn.textContent; btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = old; }, 1200); } }); });
 document.querySelectorAll('[data-toggle-input]').forEach(function(btn){ btn.addEventListener('click', function(){ const input = el(btn.getAttribute('data-toggle-input')); const visible = input.type === 'text'; input.type = visible ? 'password' : 'text'; btn.textContent = visible ? 'Show' : 'Hide'; }); });
 el('create_btn').addEventListener('click', createSession); el('terminate_btn').addEventListener('click', terminateCurrentSession); el('toast_terminate_btn').addEventListener('click', terminateCurrentSession); el('toast_watch_btn').addEventListener('click', function(){ el('active_session_toast').style.display = 'none'; if(currentRequestId) poll(currentRequestId); });
@@ -457,39 +471,54 @@ const UBUNTU_WORKFLOW_CONTENT = createWorkflowContent("create-ubuntu", "ubuntu-l
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/") {
+
+    if (request.method === "GET" && url.pathname === "/robots.txt") {
+      return new Response(`User-agent: *\nAllow: /vps\nSitemap: https://tools.enamtiga.link/sitemap.xml\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    }
+
+    if (request.method === "GET" && url.pathname === "/sitemap.xml") {
+      return new Response(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${PUBLIC_VPS_URL}</loc>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>\n`, { headers: { "content-type": "application/xml; charset=utf-8" } });
+    }
+
+    if (request.method === "GET" && url.hostname === "tools.enamtiga.link" && url.pathname === "/") {
+      return Response.redirect(`${url.origin}/vps`, 301);
+    }
+
+    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/vps" || url.pathname === "/vps/")) {
       return new Response(UI_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    if (!url.pathname.startsWith("/api/v1/")) {
+    const apiPath = url.pathname.startsWith("/vps/api/v1/") ? url.pathname.slice(4) : url.pathname;
+
+    if (!apiPath.startsWith("/api/v1/")) {
       return jsonError(404, "NOT_FOUND", "Route not found");
     }
 
-    if (request.method === "GET" && url.pathname === "/api/v1/allowlist/repos") {
+    if (request.method === "GET" && apiPath === "/api/v1/allowlist/repos") {
       return handleAllowlist(env);
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v1/session/create") {
+    if (request.method === "POST" && apiPath === "/api/v1/session/create") {
       return handleCreate(request, env);
     }
 
-    if (request.method === "GET" && url.pathname === "/api/v1/session/status") {
+    if (request.method === "GET" && apiPath === "/api/v1/session/status") {
       return handleStatus(url, env);
     }
 
-    if (request.method === "GET" && url.pathname === "/api/v1/session/connection") {
+    if (request.method === "GET" && apiPath === "/api/v1/session/connection") {
       return handleConnection(url, env);
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v1/session/cancel") {
+    if (request.method === "POST" && apiPath === "/api/v1/session/cancel") {
       return handleCancel(request, env);
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v1/session/logs") {
+    if (request.method === "POST" && apiPath === "/api/v1/session/logs") {
       return handleLogs(request, env);
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v1/webhook/github") {
+    if (request.method === "POST" && apiPath === "/api/v1/webhook/github") {
       return handleWebhook(request, env);
     }
 
@@ -554,12 +583,14 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
   const requestId = `req_${crypto.randomUUID()}`;
   const now = new Date();
   const expires = new Date(now.getTime() + durationMinutes * 60_000);
+  const requestUrl = new URL(request.url);
+  const apiPrefix = requestUrl.pathname.startsWith("/vps/") ? "/vps/api/v1" : "/api/v1";
   const runPayload = {
     ref: repoMeta.data.default_branch,
     inputs: {
       request_id: requestId,
       duration_minutes: String(durationMinutes),
-      callback_url: `${new URL(request.url).origin}/api/v1/webhook/github`,
+      callback_url: `${requestUrl.origin}${apiPrefix}/webhook/github`,
       callback_secret: env.WEBHOOK_SECRET
     }
   };
