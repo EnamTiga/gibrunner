@@ -382,6 +382,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          fail() {
+            curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
+              -H "content-type: application/json" \\
+              -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
+              -d "{\"request_id\":\"\${{ github.event.inputs.request_id }}\",\"status\":\"failed\",\"phase\":\"failed\",\"error\":{\"code\":\"RUSTDESK_INSTALL_FAILED\",\"message\":\"Linux RustDesk setup failed near line $1\",\"troubleshooting\":[\"Open the GitHub Actions run URL for full logs\",\"Check whether RustDesk .deb dependencies installed correctly\",\"Terminate the session and retry\"]}}" || true
+          }
+          trap 'fail "$LINENO"' ERR
           sudo useradd -m \${{ github.event.inputs.username }} || true
           echo "\${{ github.event.inputs.username }}:\${{ github.event.inputs.password }}" | sudo chpasswd
           sudo apt-get update
@@ -399,21 +406,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $u = "\${{ github.event.inputs.username }}"
-          $p = ConvertTo-SecureString "\${{ github.event.inputs.password }}" -AsPlainText -Force
-          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { New-LocalUser -Name $u -Password $p }
-          Set-LocalUser -Name $u -Password $p
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
-          $asset = $release.assets | Where-Object { $_.name -match "x86_64.*\.exe$" } | Select-Object -First 1
-          if (-not $asset) { throw "RustDesk .exe asset not found" }
-          $installer = Join-Path $env:TEMP "rustdesk.exe"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
-          $proc = Start-Process $installer -ArgumentList "--silent-install" -PassThru
-          if (-not $proc.WaitForExit(120000)) { Stop-Process -Id $proc.Id -Force; throw "RustDesk installer timeout" }
-          $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
-          if (-not (Test-Path $rustdesk)) { throw "RustDesk executable not found after install" }
-          Start-Process $rustdesk -ArgumentList "--service"
-          Start-Sleep -Seconds 8
+          try {
+            $u = "\${{ github.event.inputs.username }}"
+            $p = ConvertTo-SecureString "\${{ github.event.inputs.password }}" -AsPlainText -Force
+            if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { New-LocalUser -Name $u -Password $p }
+            Set-LocalUser -Name $u -Password $p
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
+            $asset = $release.assets | Where-Object { $_.name -match "x86_64.*\.exe$" } | Select-Object -First 1
+            if (-not $asset) { throw "RustDesk .exe asset not found" }
+            $installer = Join-Path $env:TEMP "rustdesk.exe"
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
+            $proc = Start-Process $installer -ArgumentList "--silent-install" -PassThru
+            if (-not $proc.WaitForExit(120000)) { Stop-Process -Id $proc.Id -Force; throw "RustDesk installer timeout" }
+            $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
+            if (-not (Test-Path $rustdesk)) { throw "RustDesk executable not found after install" }
+            Start-Process $rustdesk -ArgumentList "--service"
+            Start-Sleep -Seconds 8
+          } catch {
+            $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "failed"; phase = "failed"; error = @{ code = "RUSTDESK_INSTALL_FAILED"; message = $_.Exception.Message; troubleshooting = @("Open the GitHub Actions run URL for full logs", "Check RustDesk installer/start step", "Terminate the session and retry") } } | ConvertTo-Json -Depth 5
+            Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
+            throw
+          }
 
       - name: Get Linux RustDesk info and notify ready
         if: runner.os == 'Linux'
@@ -746,13 +759,14 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   if (!body.request_id) return jsonError(400, "VALIDATION_ERROR", "request_id is required");
   const existing = await env.APP_KV.get(`status:${body.request_id}`, "json") as SessionRecord | null;
   if (!existing) return jsonError(404, "NOT_FOUND", "Session not found");
+  const nextError = body.error?.code === "WORKFLOW_FAILED" && existing.error ? existing.error : (body.error || existing.error);
 
   const next: SessionRecord = {
     ...existing,
     status: body.status || existing.status,
     phase: body.phase || existing.phase,
     updated_at: new Date().toISOString(),
-    error: body.error || existing.error
+    error: nextError
   };
 
   await env.APP_KV.put(`status:${body.request_id}`, JSON.stringify(next), { expirationTtl: 6 * 3600 });
