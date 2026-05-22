@@ -53,7 +53,9 @@ User UI only requires GitHub token input. Repository resolution order:
 
 1. Use first allowlisted repo accessible by the token.
 2. If none is accessible, use `${token_login}/gibrunner`.
-3. If `${token_login}/gibrunner` does not exist, create it automatically (private) then continue.
+3. If `${token_login}/gibrunner` does not exist, generate it from the configured template repo (`TEMPLATE_REPO`, default `EnamTiga/gibrunner`) as a private repo, then continue.
+
+For public users, the template repo must be accessible to their token. The simplest setup is making the admin repo public and marking it as a GitHub template repository.
 
 ## Workflow installation
 

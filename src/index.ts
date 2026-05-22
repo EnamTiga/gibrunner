@@ -5,6 +5,7 @@ interface Env {
   RATE_LIMIT_CREATE?: string;
   RATE_LIMIT_WINDOW_SECONDS?: string;
   STATUS_STALE_SECONDS?: string;
+  TEMPLATE_REPO?: string;
 }
 
 type SessionStatus = "queued" | "running" | "success" | "failed" | "expired" | "cancelled";
@@ -77,6 +78,11 @@ const UI_HTML = `<!doctype html>
     .toast-actions button { width:auto; padding:.55rem .75rem; }
     .toast-secondary { background:#344056; }
     .toast-danger { background:#b42318; }
+    .status-box { margin-top:.8rem; padding:.85rem; border:1px solid #d7e2f0; border-radius:12px; background:#fbfdff; display:none; }
+    .status-row { display:flex; justify-content:space-between; gap:.8rem; padding:.28rem 0; border-bottom:1px solid #edf2f8; }
+    .status-row:last-child { border-bottom:none; }
+    .status-label { color:var(--muted); }
+    .status-value { font-weight:650; text-align:right; }
     .full { grid-column: 1 / -1; }
     .error { color:var(--danger); font-weight:600; }
     @media (max-width: 720px){ .grid{grid-template-columns:1fr;} }
@@ -97,6 +103,13 @@ const UI_HTML = `<!doctype html>
         <div class="full"><button id="terminate_btn" type="button">Terminate Session</button></div>
       </div>
       <p id="notice"></p>
+      <div id="status_box" class="status-box">
+        <div class="status-row"><span class="status-label">Status</span><span id="status_text" class="status-value">-</span></div>
+        <div class="status-row"><span class="status-label">Phase</span><span id="phase_text" class="status-value">-</span></div>
+        <div class="status-row"><span class="status-label">Repo</span><span id="repo_text" class="status-value">-</span></div>
+        <div class="status-row"><span class="status-label">Expires</span><span id="expires_text" class="status-value">-</span></div>
+        <div class="status-row"><span class="status-label">Last checked</span><span id="last_checked_text" class="status-value">-</span></div>
+      </div>
       <div id="connection_box" class="conn">
         <strong>Connection Info</strong>
         <div class="conn-grid" style="margin-top:.5rem;">
@@ -123,9 +136,36 @@ const notice = document.getElementById('notice');
 const connectionBox = document.getElementById('connection_box');
 const activeSessionToast = document.getElementById('active_session_toast');
 const activeSessionToastBody = document.getElementById('active_session_toast_body');
+const statusBox = document.getElementById('status_box');
+const storageKey = 'gibrunner.currentRequestId';
 let currentRequestId = '';
+let activePollRequestId = '';
 function setOut(v){ out.textContent = JSON.stringify(v, null, 2); }
 function setText(id, value){ document.getElementById(id).textContent = value || '-'; }
+function phaseLabel(phase){
+  return ({
+    queued: 'Menunggu runner GitHub',
+    validating: 'Memvalidasi token dan repo',
+    dispatching: 'Mengirim request ke GitHub Actions',
+    cloning: 'Clone/checkout repo',
+    provisioning: 'Menyiapkan runner dan akun login',
+    rustdesk_starting: 'Menjalankan RustDesk',
+    ready: 'Siap digunakan',
+    expiring: 'Sesi akan selesai',
+    failed: 'Gagal',
+    success: 'Selesai',
+    expired: 'Expired',
+    cancelled: 'Dibatalkan'
+  })[phase] || phase || '-';
+}
+function renderStatus(session){
+  statusBox.style.display = 'block';
+  setText('status_text', session.status || '-');
+  setText('phase_text', phaseLabel(session.phase));
+  setText('repo_text', session.repo || '-');
+  setText('expires_text', session.expires_at ? new Date(session.expires_at).toLocaleString() : '-');
+  setText('last_checked_text', new Date().toLocaleTimeString());
+}
 function renderConnection(conn){
   if(!conn){ connectionBox.style.display = 'none'; return; }
   connectionBox.style.display = 'block';
@@ -147,12 +187,15 @@ function hideActiveSessionToast(){
 }
 async function poll(reqId){
   currentRequestId = reqId;
+  activePollRequestId = reqId;
+  localStorage.setItem(storageKey, reqId);
   let done = false;
   let shownConnection = false;
-  while(!done){
+  while(!done && activePollRequestId === reqId){
     const r = await fetch('/api/v1/session/status?request_id=' + encodeURIComponent(reqId));
     const j = await r.json();
     setOut(j);
+    if(r.ok){ renderStatus(j); }
     done = ['success','failed','expired','cancelled'].includes(j.status);
     if((j.phase === 'ready' || done) && !shownConnection){
       const c = await fetch('/api/v1/session/connection?request_id=' + encodeURIComponent(reqId));
@@ -163,7 +206,11 @@ async function poll(reqId){
         shownConnection = true;
       }
     }
-    await new Promise(x => setTimeout(x, done ? 0 : 8000));
+    if(done){
+      localStorage.removeItem(storageKey);
+      break;
+    }
+    await new Promise(x => setTimeout(x, 4000));
   }
 }
 document.getElementById('create_btn').addEventListener('click', async () => {
@@ -198,6 +245,7 @@ document.getElementById('create_btn').addEventListener('click', async () => {
   }
   notice.textContent = 'Session queued. Polling status...'; notice.className='';
   currentRequestId = j.request_id;
+  localStorage.setItem(storageKey, j.request_id);
   poll(j.request_id);
 });
 
@@ -251,12 +299,20 @@ async function terminateCurrentSession(){
   notice.textContent = 'Session ' + currentRequestId + ' terminated.';
   notice.className = '';
   connectionBox.style.display = 'none';
+  localStorage.removeItem(storageKey);
   hideActiveSessionToast();
 }
 
 document.getElementById('terminate_btn').addEventListener('click', terminateCurrentSession);
 document.getElementById('toast_terminate_btn').addEventListener('click', terminateCurrentSession);
 document.getElementById('toast_cancel_btn').addEventListener('click', hideActiveSessionToast);
+
+const restoredRequestId = localStorage.getItem(storageKey);
+if(restoredRequestId){
+  notice.textContent = 'Restored active session. Auto-updating progress...';
+  currentRequestId = restoredRequestId;
+  poll(restoredRequestId);
+}
 </script>
 </body>
 </html>`;
@@ -314,40 +370,94 @@ jobs:
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
             -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"running","phase":"provisioning"}'
 
-      - name: Setup Linux user and RustDesk
-        if: runner.os == 'Linux'
+      - name: Notify RustDesk starting
         shell: bash
         run: |
+          curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
+            -H "content-type: application/json" \\
+            -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
+            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"running","phase":"rustdesk_starting"}'
+
+      - name: Setup Linux user and RustDesk
+        if: runner.os == 'Linux'
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          set -euo pipefail
           sudo useradd -m \${{ github.event.inputs.username }} || true
           echo "\${{ github.event.inputs.username }}:\${{ github.event.inputs.password }}" | sudo chpasswd
-          curl -L https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-x86_64.deb -o /tmp/rustdesk.deb || true
-          sudo dpkg -i /tmp/rustdesk.deb || sudo apt-get update && sudo apt-get install -f -y
-          nohup rustdesk --service >/tmp/rustdesk.log 2>&1 &
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates jq
+          DEB_URL=$(curl -fsSL https://api.github.com/repos/rustdesk/rustdesk/releases/latest | jq -r '.assets[] | select(.name | test("x86_64.*\\.deb$")) | .browser_download_url' | head -n 1)
+          if [ -z "$DEB_URL" ]; then echo "RustDesk .deb asset not found"; exit 40; fi
+          timeout 90s curl -fL "$DEB_URL" -o /tmp/rustdesk.deb
+          sudo apt-get install -y /tmp/rustdesk.deb || sudo apt-get install -f -y
+          (nohup rustdesk --service >/tmp/rustdesk.log 2>&1 &) || true
+          sleep 8
 
       - name: Setup Windows user and RustDesk
         if: runner.os == 'Windows'
+        timeout-minutes: 6
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $u = "\${{ github.event.inputs.username }}"
           $p = ConvertTo-SecureString "\${{ github.event.inputs.password }}" -AsPlainText -Force
           if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { New-LocalUser -Name $u -Password $p }
           Set-LocalUser -Name $u -Password $p
-          Invoke-WebRequest -Uri "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-1.2.3-x86_64.exe" -OutFile "$env:TEMP\\rustdesk.exe"
-          Start-Process "$env:TEMP\\rustdesk.exe" -ArgumentList "--silent-install" -Wait
-          Start-Process "C:\\Program Files\\RustDesk\\RustDesk.exe" -ArgumentList "--service"
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -match "x86_64.*\.exe$" } | Select-Object -First 1
+          if (-not $asset) { throw "RustDesk .exe asset not found" }
+          $installer = Join-Path $env:TEMP "rustdesk.exe"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer
+          $proc = Start-Process $installer -ArgumentList "--silent-install" -PassThru
+          if (-not $proc.WaitForExit(120000)) { Stop-Process -Id $proc.Id -Force; throw "RustDesk installer timeout" }
+          $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
+          if (-not (Test-Path $rustdesk)) { throw "RustDesk executable not found after install" }
+          Start-Process $rustdesk -ArgumentList "--service"
+          Start-Sleep -Seconds 8
 
-      - name: Get RustDesk info and notify ready
+      - name: Get Linux RustDesk info and notify ready
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           RID="unknown"
           RPW="\${{ github.event.inputs.password }}"
-          if command -v rustdesk >/dev/null 2>&1; then
-            RID=$(rustdesk --get-id || echo unknown)
+          for i in {1..10}; do
+            if command -v rustdesk >/dev/null 2>&1; then RID=$(timeout 10s rustdesk --get-id 2>/dev/null || true); fi
+            if [ -n "$RID" ] && [ "$RID" != "unknown" ]; then break; fi
+            sleep 6
+          done
+          if [ -z "$RID" ] || [ "$RID" = "unknown" ]; then
+            curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
+              -H "content-type: application/json" \\
+              -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
+              -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"RUSTDESK_ID_MISSING","message":"RustDesk started but ID could not be read","troubleshooting":["Open the GitHub Actions log for RustDesk output","Try ubuntu-latest first","Retry after terminating this session"]}}'
+            exit 42
           fi
           curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
             -H "content-type: application/json" \\
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
             -d "{\"request_id\":\"\${{ github.event.inputs.request_id }}\",\"status\":\"running\",\"phase\":\"ready\",\"connection\":{\"rustdesk_id\":\"$RID\",\"rustdesk_password\":\"$RPW\"}}"
+
+      - name: Get Windows RustDesk info and notify ready
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $rid = "unknown"
+          $rustdesk = "C:\\Program Files\\RustDesk\\RustDesk.exe"
+          for ($i = 0; $i -lt 10; $i++) {
+            if (Test-Path $rustdesk) { $rid = (& $rustdesk --get-id 2>$null) }
+            if ($rid -and $rid -ne "unknown") { break }
+            Start-Sleep -Seconds 6
+          }
+          if (-not $rid -or $rid -eq "unknown") {
+            $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "failed"; phase = "failed"; error = @{ code = "RUSTDESK_ID_MISSING"; message = "RustDesk started but ID could not be read"; troubleshooting = @("Open the GitHub Actions log for RustDesk output", "Try ubuntu-latest first", "Retry after terminating this session") } } | ConvertTo-Json -Depth 5
+            Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
+            exit 42
+          }
+          $body = @{ request_id = "\${{ github.event.inputs.request_id }}"; status = "running"; phase = "ready"; connection = @{ rustdesk_id = $rid; rustdesk_password = "\${{ github.event.inputs.password }}" } } | ConvertTo-Json -Depth 5
+          Invoke-RestMethod -Method Post -Uri "\${{ github.event.inputs.callback_url }}" -Headers @{ "x-hook-signature" = "\${{ github.event.inputs.callback_secret }}" } -ContentType "application/json" -Body $body
 
       - name: Hold session
         shell: bash
@@ -357,13 +467,22 @@ jobs:
           sleep "$secs"
 
       - name: Notify expired
-        if: always()
+        if: success()
         shell: bash
         run: |
           curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
             -H "content-type: application/json" \\
             -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
             -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"expired","phase":"expired"}'
+
+      - name: Notify failed
+        if: failure()
+        shell: bash
+        run: |
+          curl -sS -X POST "\${{ github.event.inputs.callback_url }}" \\
+            -H "content-type: application/json" \\
+            -H "x-hook-signature: \${{ github.event.inputs.callback_secret }}" \\
+            -d '{"request_id":"\${{ github.event.inputs.request_id }}","status":"failed","phase":"failed","error":{"code":"WORKFLOW_FAILED","message":"Workflow failed before RustDesk became ready","troubleshooting":["Open the workflow logs from the GitHub Actions run URL","Check RustDesk install/start step","Terminate the session and retry"]}}'
 `;
 
 export default {
@@ -518,7 +637,7 @@ async function resolveTargetRepoFromAllowlist(env: Env, githubToken: string): Pr
   const keys = await env.APP_KV.list({ prefix: "allowlist:" });
   const repos = keys.keys.map((k) => k.name.replace("allowlist:", ""));
   if (repos.length === 0) {
-    return resolveOrCreateUserRepo(githubToken);
+    return resolveOrCreateUserRepo(env, githubToken);
   }
 
   for (const repo of repos) {
@@ -526,10 +645,10 @@ async function resolveTargetRepoFromAllowlist(env: Env, githubToken: string): Pr
     if (check.ok) return { ok: true, repo };
   }
 
-  return resolveOrCreateUserRepo(githubToken);
+  return resolveOrCreateUserRepo(env, githubToken);
 }
 
-async function resolveOrCreateUserRepo(githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
+async function resolveOrCreateUserRepo(env: Env, githubToken: string): Promise<{ ok: true; repo: string } | { ok: false; response: Response }> {
   const viewer = await ghGetViewer(githubToken);
   if (!viewer.ok) return { ok: false, response: viewer.response };
   const repo = `${viewer.login}/gibrunner`;
@@ -537,7 +656,8 @@ async function resolveOrCreateUserRepo(githubToken: string): Promise<{ ok: true;
   const existing = await ghGetRepo(repo, githubToken);
   if (existing.ok) return { ok: true, repo };
 
-  const created = await ghCreateRepo(githubToken, "gibrunner");
+  const templateRepo = env.TEMPLATE_REPO || "EnamTiga/gibrunner";
+  const created = await ghGenerateRepoFromTemplate(githubToken, templateRepo, viewer.login, "gibrunner");
   if (!created.ok) return { ok: false, response: created.response };
   return { ok: true, repo };
 }
@@ -547,6 +667,34 @@ async function handleStatus(url: URL, env: Env): Promise<Response> {
   if (!requestId) return jsonError(400, "VALIDATION_ERROR", "request_id is required");
   const record = await env.APP_KV.get(`status:${requestId}`, "json") as SessionRecord | null;
   if (!record) return jsonError(404, "NOT_FOUND", "Session not found");
+
+  const stalledPhases: SessionPhase[] = ["dispatching", "cloning", "provisioning", "rustdesk_starting"];
+  const staleMs = Date.now() - new Date(record.updated_at).getTime();
+  if (["queued", "running"].includes(record.status) && stalledPhases.includes(record.phase) && staleMs > 10 * 60_000) {
+    record.status = "failed";
+    record.phase = "failed";
+    record.updated_at = new Date().toISOString();
+    record.error = {
+      code: "WORKFLOW_STALLED",
+      message: "Workflow stopped sending progress updates",
+      troubleshooting: [
+        "Open the GitHub Actions run URL and inspect the failed or hanging step",
+        "Terminate this session before creating a new one",
+        "Create again so GibRunner updates the workflow file in the target repo"
+      ]
+    };
+    await env.APP_KV.put(`status:${requestId}`, JSON.stringify(record), { expirationTtl: 6 * 3600 });
+    await env.APP_KV.delete(`active:${record.repo}`);
+  }
+
+  if (["queued", "running"].includes(record.status) && Date.now() > new Date(record.expires_at).getTime()) {
+    record.status = "expired";
+    record.phase = "expired";
+    record.updated_at = new Date().toISOString();
+    await env.APP_KV.put(`status:${requestId}`, JSON.stringify(record), { expirationTtl: 6 * 3600 });
+    await env.APP_KV.delete(`active:${record.repo}`);
+  }
+
   return json(record);
 }
 
@@ -629,11 +777,23 @@ async function consumeCreateRateLimit(env: Env, ip: string): Promise<boolean> {
 async function ensureWorkflowFile(repo: string, branch: string, token: string): Promise<{ ok: true } | { ok: false; response: Response }> {
   const checkUrl = `https://api.github.com/repos/${repo}/contents/${WORKFLOW_FILE}?ref=${encodeURIComponent(branch)}`;
   const check = await ghApi(checkUrl, token, { method: "GET" });
-  if (check.status === 200) return { ok: true };
-  if (check.status !== 404) return { ok: false, response: await toGitHubError(check, "Failed to check workflow file") };
-
   const putUrl = `https://api.github.com/repos/${repo}/contents/${WORKFLOW_FILE}`;
   const content = toBase64(WORKFLOW_CONTENT);
+
+  if (check.status === 200) {
+    const existing = (await check.json()) as { sha: string; content?: string };
+    const existingContent = (existing.content || "").replace(/\s/g, "");
+    if (existingContent === content) return { ok: true };
+
+    const update = await ghApi(putUrl, token, {
+      method: "PUT",
+      body: JSON.stringify({ message: "Update create-vps workflow", content, branch, sha: existing.sha })
+    });
+    if (update.status >= 200 && update.status < 300) return { ok: true };
+    return { ok: false, response: await toGitHubError(update, "Failed to update workflow file") };
+  }
+  if (check.status !== 404) return { ok: false, response: await toGitHubError(check, "Failed to check workflow file") };
+
   const put = await ghApi(putUrl, token, {
     method: "PUT",
     body: JSON.stringify({ message: "Add create-vps workflow", content, branch })
@@ -660,13 +820,13 @@ async function ghGetViewer(token: string): Promise<{ ok: true; login: string } |
   return { ok: false, response: await toGitHubError(resp, "Failed to read token user profile") };
 }
 
-async function ghCreateRepo(token: string, name: string): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const resp = await ghApi("https://api.github.com/user/repos", token, {
+async function ghGenerateRepoFromTemplate(token: string, templateRepo: string, owner: string, name: string): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const resp = await ghApi(`https://api.github.com/repos/${templateRepo}/generate`, token, {
     method: "POST",
-    body: JSON.stringify({ name, private: true, auto_init: true, description: "GibRunner target repository" })
+    body: JSON.stringify({ owner, name, private: true, include_all_branches: false, description: "GibRunner target repository" })
   });
   if (resp.status >= 200 && resp.status < 300) return { ok: true };
-  return { ok: false, response: await toGitHubError(resp, "Failed to create user repository gibrunner") };
+  return { ok: false, response: await toGitHubError(resp, `Failed to generate user repository from template ${templateRepo}`) };
 }
 
 async function ghDispatchWorkflow(repo: string, token: string, payload: Record<string, unknown>): Promise<{ ok: true } | { ok: false; response: Response }> {
