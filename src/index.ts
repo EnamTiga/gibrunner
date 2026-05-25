@@ -44,7 +44,7 @@ interface ConnectionRecord {
 }
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const PUBLIC_VPS_URL = "https://tools.enamtiga.link/vps";
+const PUBLIC_VPS_URL = "https://enamtiga.link/tools/gibrunner";
 
 const UI_HTML = `<!doctype html>
 <html lang="en">
@@ -54,16 +54,16 @@ const UI_HTML = `<!doctype html>
   <title>GibRunner VPS - Instant SSH Linux Sessions</title>
   <meta name="description" content="Start secure temporary Linux VPS sessions with SSH and web terminal access from your GitHub token. Clean, fast, and browser-friendly." />
   <meta name="robots" content="index,follow,max-image-preview:large" />
-  <link rel="canonical" href="https://tools.enamtiga.link/vps" />
+  <link rel="canonical" href="https://enamtiga.link/tools/gibrunner" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="GibRunner VPS - Instant SSH Linux Sessions" />
   <meta property="og:description" content="Launch temporary Linux SSH sessions with a simple web interface and web terminal access." />
-  <meta property="og:url" content="https://tools.enamtiga.link/vps" />
+  <meta property="og:url" content="https://enamtiga.link/tools/gibrunner" />
   <meta property="og:site_name" content="EnamTiga Tools" />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="GibRunner VPS - Instant SSH Linux Sessions" />
   <meta name="twitter:description" content="Launch temporary Linux SSH sessions with a simple web interface and web terminal access." />
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"GibRunner VPS","applicationCategory":"DeveloperApplication","operatingSystem":"Linux","url":"https://tools.enamtiga.link/vps","description":"Start secure temporary Linux VPS sessions with SSH and web terminal access."}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"GibRunner VPS","applicationCategory":"DeveloperApplication","operatingSystem":"Linux","url":"https://enamtiga.link/tools/gibrunner","description":"Start secure temporary Linux VPS sessions with SSH and web terminal access."}</script>
   <style>
     :root { --bg:#f5f7fb; --surface:#ffffff; --surface2:#f8fafc; --line:#d9e1ec; --text:#111827; --muted:#5b6575; --soft:#eef4ff; --primary:#1d4ed8; --primary2:#1e40af; --success:#047857; --warning:#b45309; --danger:#b42318; --shadow:0 20px 60px rgba(15,23,42,.08); }
     * { box-sizing: border-box; }
@@ -473,22 +473,26 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/robots.txt") {
-      return new Response(`User-agent: *\nAllow: /vps\nSitemap: https://tools.enamtiga.link/sitemap.xml\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      return new Response(`User-agent: *\nAllow: /tools/gibrunner\nSitemap: https://enamtiga.link/tools/gibrunner/sitemap.xml\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
 
     if (request.method === "GET" && url.pathname === "/sitemap.xml") {
       return new Response(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${PUBLIC_VPS_URL}</loc>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>\n`, { headers: { "content-type": "application/xml; charset=utf-8" } });
     }
 
-    if (request.method === "GET" && url.hostname === "tools.enamtiga.link" && url.pathname === "/") {
-      return Response.redirect(`${url.origin}/vps`, 301);
-    }
-
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/vps" || url.pathname === "/vps/")) {
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/tools/gibrunner" ||
+        url.pathname === "/tools/gibrunner/" ||
+        url.pathname === "/tools/gibrunner/vps" ||
+        url.pathname === "/tools/gibrunner/vps/")
+    ) {
       return new Response(UI_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    const apiPath = url.pathname.startsWith("/vps/api/v1/") ? url.pathname.slice(4) : url.pathname;
+    const basePath = "/tools/gibrunner";
+    const normalizedPath = url.pathname.startsWith(basePath) ? url.pathname.slice(basePath.length) || "/" : url.pathname;
+    const apiPath = normalizedPath.startsWith("/vps/api/v1/") ? normalizedPath.slice(4) : normalizedPath;
 
     if (!apiPath.startsWith("/api/v1/")) {
       return jsonError(404, "NOT_FOUND", "Route not found");
